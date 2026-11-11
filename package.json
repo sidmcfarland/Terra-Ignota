@@ -1,0 +1,23 @@
+{
+  "name": "terra-ignota",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "npm run dev:signal & npm run dev:client",
+    "dev:client": "npm -w @terra/client run dev",
+    "dev:signal": "npm -w @terra/signal run dev",
+    "build": "npm -w @terra/client run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test --trace off"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": { "node": ">=22.18" }
+}

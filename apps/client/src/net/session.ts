@@ -1,0 +1,281 @@
+import {
+  PLAYER_SPEED, PROTOCOL_VERSION, TICK_HZ, isWalkable,
+  type FromSignal, type PlayerInfo, type Reliable, type TileLookup, type Unreliable, type ZoneId,
+} from '@terra/shared';
+import { Peer } from './peer.ts';
+import { SignalClient } from './signal.ts';
+
+/** How far behind real time remote players are rendered, for smoothness. */
+const INTERP_DELAY_MS = 100;
+const BUFFER_MS = 1000;
+
+export type Role = 'offline' | 'connecting' | 'host' | 'client';
+
+interface Sample { t: number; x: number; y: number }
+
+export interface Remote {
+  info: PlayerInfo;
+  samples: Sample[];
+}
+
+/** Server-side record the host keeps for each connected client. */
+interface HostedClient {
+  peer: Peer;
+  info?: PlayerInfo;
+  x: number;
+  y: number;
+  lastSeq: number;
+  lastT: number;
+}
+
+export interface SessionOptions {
+  signalUrl: string;
+  world: string;
+  zone: ZoneId;
+  peerId: string;
+  info: PlayerInfo;
+  iceServers: RTCIceServer[];
+  tiles: TileLookup;
+  getSelf(): { x: number; y: number };
+}
+
+/**
+ * Zone session. The zone host (chosen by the directory) runs the
+ * authoritative tick and relays state in a star topology; everyone else
+ * connects only to the host.
+ */
+export class Session {
+  role: Role = 'connecting';
+  hostId: string | null = null;
+  readonly remotes = new Map<string, Remote>();
+
+  private signal: SignalClient;
+  // Client-side state
+  private hostPeer: Peer | null = null;
+  private seq = 0;
+  // Host-side state
+  private clients = new Map<string, HostedClient>();
+  private tick = 0;
+  private timer: ReturnType<typeof setInterval>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+
+  private readonly o: SessionOptions;
+
+  constructor(o: SessionOptions) {
+    this.o = o;
+    this.signal = new SignalClient(
+      o.signalUrl,
+      () => this.signal.send({ t: 'join', v: PROTOCOL_VERSION, world: o.world, zone: o.zone, peerId: o.peerId }),
+      (m) => this.onSignal(m),
+      () => {
+        // Lost the directory. Keep existing P2P links; just mark state.
+        if (this.role !== 'host' && !this.hostPeer?.isOpen) this.role = 'offline';
+      },
+    );
+    this.timer = setInterval(() => this.onTick(), 1000 / TICK_HZ);
+  }
+
+  get playerCount(): number {
+    return this.remotes.size + 1;
+  }
+
+  // ---------------- signaling ----------------
+
+  private onSignal(m: FromSignal) {
+    switch (m.t) {
+      case 'host':
+        if (m.hostId === this.o.peerId) this.becomeHost();
+        else this.becomeClient(m.hostId);
+        break;
+      case 'signal': {
+        if (this.role === 'host') {
+          if (m.data.kind === 'offer') this.acceptClient(m.from);
+          this.clients.get(m.from)?.peer.handleSignal(m.data);
+        } else if (this.hostPeer?.remoteId === m.from) {
+          void this.hostPeer.handleSignal(m.data);
+        }
+        break;
+      }
+      case 'left':
+        this.clients.get(m.peerId)?.peer.close();
+        break;
+      case 'error':
+        console.error('signal error:', m.message);
+        break;
+    }
+  }
+
+  private sendSignal(to: string) {
+    return (data: Parameters<Peer['handleSignal']>[0]) => this.signal.send({ t: 'signal', to, data });
+  }
+
+  // ---------------- host role ----------------
+
+  private becomeHost() {
+    clearTimeout(this.retryTimer);
+    const old = this.hostPeer;
+    this.hostPeer = null;
+    old?.close();
+    this.role = 'host';
+    this.hostId = this.o.peerId;
+    this.remotes.clear();
+  }
+
+  private acceptClient(id: string) {
+    this.clients.get(id)?.peer.close();
+    const peer: Peer = new Peer(id, false, this.o.iceServers, this.sendSignal(id), {
+      onOpen: () => {},
+      onClose: () => {
+        if (this.clients.get(id)?.peer !== peer) return;
+        this.clients.delete(id);
+        this.remotes.delete(id);
+        this.broadcastRoster();
+      },
+      onReliable: (m) => this.hostOnReliable(id, m),
+      onUnreliable: (m) => this.hostOnUnreliable(id, m),
+    });
+    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0 });
+  }
+
+  private hostOnReliable(id: string, m: Reliable) {
+    const c = this.clients.get(id);
+    if (!c) return;
+    if (m.t === 'hello' && !c.info) {
+      c.info = { id, name: String(m.info.name).slice(0, 32), hue: Number(m.info.hue) % 360 || 0 };
+      c.x = Number(m.x) || 0;
+      c.y = Number(m.y) || 0;
+      c.lastT = performance.now();
+      this.remotes.set(id, { info: c.info, samples: [{ t: c.lastT, x: c.x, y: c.y }] });
+      this.broadcastRoster();
+    }
+  }
+
+  private hostOnUnreliable(id: string, m: Unreliable) {
+    const c = this.clients.get(id);
+    if (!c?.info || m.t !== 'pos' || !(m.seq > c.lastSeq)) return;
+    if (!Number.isFinite(m.x) || !Number.isFinite(m.y)) return;
+    const now = performance.now();
+    // Lenient anti-teleport: clamp to max plausible travel since last update.
+    const maxD = PLAYER_SPEED * ((now - c.lastT) / 1000 + 0.25) * 1.5;
+    let dx = m.x - c.x, dy = m.y - c.y;
+    const d = Math.hypot(dx, dy);
+    if (d > maxD) (dx *= maxD / d), (dy *= maxD / d);
+    const nx = c.x + dx, ny = c.y + dy;
+    if (!isWalkable(this.o.tiles(Math.floor(nx), Math.floor(ny)))) return;
+    c.x = nx;
+    c.y = ny;
+    c.lastSeq = m.seq;
+    c.lastT = now;
+    pushSample(this.remotes.get(id), now, nx, ny);
+  }
+
+  private broadcastRoster() {
+    const players: PlayerInfo[] = [this.o.info];
+    for (const c of this.clients.values()) if (c.info) players.push(c.info);
+    for (const c of this.clients.values()) if (c.info) c.peer.sendR({ t: 'roster', players });
+  }
+
+  // ---------------- client role ----------------
+
+  private becomeClient(hostId: string) {
+    if (this.role === 'host') {
+      for (const c of this.clients.values()) c.peer.close();
+      this.clients.clear();
+    }
+    if (this.hostPeer?.remoteId === hostId && !this.hostPeer.isOpen) return; // already dialing
+    this.hostPeer?.close();
+    this.role = 'connecting';
+    this.hostId = hostId;
+    this.remotes.clear();
+    this.dial(hostId);
+  }
+
+  private dial(hostId: string) {
+    clearTimeout(this.retryTimer);
+    const peer: Peer = new Peer(hostId, true, this.o.iceServers, this.sendSignal(hostId), {
+      onOpen: () => {
+        this.role = 'client';
+        const self = this.o.getSelf();
+        peer.sendR({ t: 'hello', info: this.o.info, x: self.x, y: self.y });
+      },
+      onClose: () => {
+        if (this.hostPeer !== peer) return;
+        this.hostPeer = null;
+        this.remotes.clear();
+        if (this.role === 'host') return;
+        this.role = 'connecting';
+        // Host may be gone; the directory will tell us about a new one.
+        // Otherwise, redial the same host shortly.
+        this.retryTimer = setTimeout(() => {
+          if (this.hostId === hostId && !this.hostPeer && this.role === 'connecting') this.dial(hostId);
+        }, 2000);
+      },
+      onReliable: (m) => {
+        if (m.t !== 'roster') return;
+        const ids = new Set<string>();
+        for (const p of m.players) {
+          if (p.id === this.o.peerId) continue;
+          ids.add(p.id);
+          const r = this.remotes.get(p.id);
+          if (r) r.info = p;
+          else this.remotes.set(p.id, { info: p, samples: [] });
+        }
+        for (const id of this.remotes.keys()) if (!ids.has(id)) this.remotes.delete(id);
+      },
+      onUnreliable: (m) => {
+        if (m.t !== 'snap') return;
+        const now = performance.now();
+        for (const [id, x, y] of m.p) pushSample(this.remotes.get(id), now, x, y);
+      },
+    });
+    this.hostPeer = peer;
+  }
+
+  // ---------------- tick ----------------
+
+  private onTick() {
+    const self = this.o.getSelf();
+    if (this.role === 'host') {
+      this.tick++;
+      const p: Array<[string, number, number]> = [[this.o.peerId, round(self.x), round(self.y)]];
+      for (const [id, c] of this.clients) if (c.info) p.push([id, round(c.x), round(c.y)]);
+      const snap: Unreliable = { t: 'snap', tick: this.tick, p };
+      for (const c of this.clients.values()) if (c.info) c.peer.sendU(snap);
+    } else if (this.role === 'client' && this.hostPeer) {
+      this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: round(self.x), y: round(self.y) });
+    }
+  }
+
+  /** Interpolated position of a remote player for rendering, or null. */
+  sample(r: Remote, now: number): { x: number; y: number } | null {
+    const s = r.samples;
+    if (s.length === 0) return null;
+    const t = now - INTERP_DELAY_MS;
+    if (t <= s[0].t) return s[0];
+    for (let i = s.length - 1; i > 0; i--) {
+      const a = s[i - 1], b = s[i];
+      if (t >= a.t) {
+        if (t >= b.t) return b;
+        const k = (t - a.t) / (b.t - a.t);
+        return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+      }
+    }
+    return s[s.length - 1];
+  }
+
+  close() {
+    clearInterval(this.timer);
+    clearTimeout(this.retryTimer);
+    this.signal.close();
+    this.hostPeer?.close();
+    for (const c of this.clients.values()) c.peer.close();
+  }
+}
+
+function pushSample(r: Remote | undefined, t: number, x: number, y: number) {
+  if (!r) return;
+  r.samples.push({ t, x, y });
+  while (r.samples.length > 2 && r.samples[0].t < t - BUFFER_MS) r.samples.shift();
+}
+
+const round = (v: number) => Math.round(v * 100) / 100;

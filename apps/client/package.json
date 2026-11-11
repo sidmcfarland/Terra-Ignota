@@ -1,0 +1,19 @@
+{
+  "name": "@terra/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@terra/shared": "*",
+    "pixi.js": "^8.6.0"
+  },
+  "devDependencies": {
+    "vite": "^7.2.0",
+    "vite-plugin-pwa": "^1.2.0"
+  }
+}
