@@ -40,7 +40,7 @@ infra/            docker-compose: signal + coturn + seed
 ## Milestones
 | # | Deliverable | Done when | Status |
 |---|---|---|---|
-| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Not live yet: merge to `main` and turn on Pages (Settings → Pages → Source: GitHub Actions) |
+| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Next |
@@ -48,6 +48,22 @@ infra/            docker-compose: signal + coturn + seed
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
+
+## M3 design (agreed 2026-11-11)
+**Host election.** The signal server picks each zone's host from scores that peers send in their heartbeats. It still sees no gameplay.
+- **Opt-in:** "Available to host" is on by default for desktops and off for mobile. A toggle in the settings menu stores the choice in localStorage, and `#host=0` turns it off for tests.
+- **Hard limits:** a peer can't host unless it has opted in, its tab is in the foreground, it isn't mobile, and it isn't on battery where the browser can tell (only Chromium's Battery API reports this).
+- **Score:** average ping to the zone's clients, reported by backups and clients (before a peer has hosted, its ping to the signal server stands in); its track record as a host, kept per device (unclean exits, how often the 20 Hz tick ran late, total time hosted; self-reported, which is acceptable for co-op); and uptime in the current session.
+- **No flip-flopping:** the current host gets a bonus. A challenger must score at least 20% higher for 30s in a row before hosting moves. It moves immediately only on a crash, an opt-out or a backgrounded tab.
+- **Capacity:** each candidate advertises a client cap, estimated from its CPU core count and how long its ticks take, starting around 30. A peer whose cap the zone's player count already exceeds is ranked lower.
+- **Backups:** the next two candidates by score become the backups.
+- **One host per zone.** A single authority keeps the simulation and the M4 edit merging simple. A zone that outgrows its host's cap is an M6 problem, solved by splitting the zone or relaying.
+
+**Movement checks.** Lenient: up to about 25% over max speed, averaged over roughly 0.5s, and never through walls. A failing move silently snaps the player back to the last valid position. No kicks.
+
+**Zone borders.** A player switches zones only after going 1 chunk (32 tiles) past the border, and switches back only after going 1 chunk back. Linked neighbouring hosts keep players across the border visible.
+
+**e2e coverage.** A hard crash (host page closed with no goodbye; a backup takes over within about 2s) and a backgrounded host tab (immediate handoff).
 
 ## Current limitations (what M2 left for later)
 - **No zone handoff yet (M3).** A player joins the zone they spawn in and stays in that session even after walking out of it.
@@ -67,6 +83,12 @@ infra/            docker-compose: signal + coturn + seed
 | Signaling server is soft-state only | It never sees gameplay and can be swapped for a DHT later. |
 | 3D isometric (Three.js) instead of 2D Pixi | The developer switched after M2. The top-down chunk painter remains as `render/atlas.ts` for the M5 atlas. |
 | Spawn searched from the centre of zone 0,0 | Spawning at the origin put players either side of a zone border. |
+| Signal server elects hosts from peer-reported scores | Simplest extension of what exists. Peers computing it themselves would still need the server's member list. |
+| Hosting is opt-out on desktop, opt-in on mobile | Hundreds of players need a deep pool of hosts, and phones make poor ones. |
+| One host per zone, with a 20% / 30s threshold before switching | Keeps one authority per zone and stops hosts flip-flopping. |
+| Lenient movement checks with a silent snap-back | Co-op makes cheating low-stakes, and strict per-tick checks would rubber-band honest players on bad connections. |
+| 1-chunk margin at zone borders | Stops a player standing on the line from being handed between hosts over and over. |
+| Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 
 ## Risks
 - **Backgrounded tabs throttle timers**, so a hidden tab hands off hosting immediately.
