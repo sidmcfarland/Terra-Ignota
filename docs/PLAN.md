@@ -65,6 +65,13 @@ infra/            docker-compose: signal + coturn + seed
 
 **e2e coverage.** A hard crash (host page closed with no goodbye; a backup takes over within about 2s) and a backgrounded host tab (immediate handoff).
 
+## Open questions (M4 and M5)
+Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
+- **Catching up:** how a new host or a returning player gets a chunk's edits (from the seed, from peers' IndexedDB, or both).
+- **Keeping the seed in sync:** how the seed stays current across many zones, and how replicas spot and fill gaps in what they hold (for example, comparing per-chunk version vectors).
+- **Edits across zone borders:** an edit that spans two zones, or one made by a player in a neighbouring zone's view.
+- **Scarcity and inventory:** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts). Options: each player owns their inventory as signed state, or the host or seed arbitrates for each chunk.
+
 ## Current limitations (what M2 left for later)
 - **No zone handoff yet (M3).** A player joins the zone they spawn in and stays in that session even after walking out of it.
 - **Host election is a placeholder (M3).** The signaling server picks the earliest member of a zone as host. Score-based election, backup peers and handing off when a tab is backgrounded aren't built yet. When the host leaves, the next member takes over in about 1.2s, and that is e2e-tested.
