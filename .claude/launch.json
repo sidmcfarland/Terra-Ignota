@@ -4,7 +4,7 @@
     {
       "name": "signal",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--experimental-strip-types", "--watch", "apps/signal/src/server.ts"],
+      "runtimeArgs": ["--watch", "apps/signal/src/server.ts"],
       "port": 8787
     },
     {
