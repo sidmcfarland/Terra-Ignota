@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHUNK, Tile, ZONE_MARGIN, ZONE_TILES, findSpawn, generateChunk, isWalkable, nextZone, step, tileAt, worldSeed,
-  zoneOf,
+  zoneName, zoneOf, zonesNear,
 } from './index.ts';
 
 describe('worldgen', () => {
@@ -56,6 +56,24 @@ describe('zones', () => {
 
   it('jumps straight to the right zone after a teleport', () => {
     expect(nextZone('0,0', 10 * ZONE_TILES + 5, -3 * ZONE_TILES)).toBe('10,-3');
+  });
+
+  it('names zones deterministically per world', () => {
+    const s = worldSeed('test');
+    expect(zoneName(s, '3,-2')).toBe(zoneName(s, '3,-2'));
+    expect(zoneName(s, '3,-2')).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+    const names = new Set<string>();
+    for (let x = -5; x < 5; x++) for (let y = -5; y < 5; y++) names.add(zoneName(s, `${x},${y}`));
+    expect(names.size).toBeGreaterThan(80);
+  });
+
+  it('lists the zones whose border band contains a point', () => {
+    const mid = ZONE_TILES / 2;
+    expect(zonesNear(mid, mid)).toEqual(['0,0']);
+    expect(zonesNear(ZONE_TILES - 3, mid).sort()).toEqual(['0,0', '1,0']);
+    expect(zonesNear(ZONE_TILES + 3, ZONE_TILES + 3).sort()).toEqual(['0,0', '0,1', '1,0', '1,1']);
+    // Consistent with nextZone: a player in any listed zone stays in it.
+    for (const z of zonesNear(ZONE_TILES + 3, ZONE_TILES - 3)) expect(nextZone(z, ZONE_TILES + 3, ZONE_TILES - 3)).toBe(z);
   });
 });
 

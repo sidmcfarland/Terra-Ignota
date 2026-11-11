@@ -29,7 +29,7 @@ async function join(browser: Browser, world: string): Promise<Page> {
   page.on('pageerror', (e) => console.error('pageerror:', e.message));
   // render=0: these tests check networking state only, and software WebGL in
   // headless Chromium is slow enough to break handoff timings.
-  await page.goto(`/#w=${world}&render=0`);
+  await page.goto(`/#w=${world}&render=0&debug=1`);
   await page.waitForFunction(() => (window as any).__ti?.session);
   return page;
 }
@@ -44,6 +44,13 @@ test('two players see each other move', async ({ browser }) => {
   // Each sees exactly one remote player.
   await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
   await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(1);
+
+  // Debug panels: the host lists what B reports; B names the host it reports to.
+  const nameOf = (p: Page) => p.evaluate(() => (window as any).__ti.cfg.name as string);
+  const [aName, bName] = [await nameOf(a), await nameOf(b)];
+  await expect(a.locator('#debug')).toContainText('CLIENTS 1');
+  await expect(a.locator('#debug')).toContainText(bName.slice(0, 19));
+  await expect(b.locator('#debug')).toContainText(`HOST   ${aName}`);
 
   // B moves; A's view of B tracks B's real position.
   const before = (await probe(b)).self;

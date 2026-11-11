@@ -14,8 +14,20 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   backdrop-filter: blur(4px); user-select: none; }
 #hud .title { font-weight: 700; letter-spacing: 0.04em; color: var(--accent); margin-bottom: 4px; }
 #status { color: var(--muted); white-space: pre; font-variant-numeric: tabular-nums; }
-#invite { margin-top: 8px; font: inherit; color: var(--bg); background: var(--accent); border: 0;
+#hud .buttons { display: flex; gap: 6px; margin-top: 8px; }
+#hud button { font: inherit; color: var(--bg); background: var(--accent); border: 0;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+#hud #debugBtn { color: var(--text); background: rgba(232, 238, 242, 0.14); }
+#debug { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
+  margin: 0; background: var(--panel); border-radius: 8px; padding: 10px 12px; max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px); overflow: auto; backdrop-filter: blur(4px); color: var(--text);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+#debug[hidden] { display: none; }
+/* Narrow screens: keep the debug panel clear of the HUD by docking it at the bottom. */
+@media (max-width: 900px) {
+  #debug { top: auto; bottom: max(12px, env(safe-area-inset-bottom)); left: max(12px, env(safe-area-inset-left));
+    max-height: 40vh; font-size: 10px; }
+}
 .labels3d { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .labels3d div { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px; color: #fff;
   text-shadow: 0 0 3px #000, 0 0 3px #000; }

@@ -26,6 +26,31 @@ interface HostedClient {
   y: number;
   lastSeq: number;
   lastT: number;
+  /** Position reports accepted, and reports clamped or rejected by validation. */
+  reports: number;
+  corrections: number;
+}
+
+/** What a host knows about one of its clients, for the debug panel. */
+export interface ClientDebug {
+  id: string;
+  name: string | null;
+  open: boolean;
+  x: number;
+  y: number;
+  seq: number;
+  reportAgeMs: number | null;
+  reports: number;
+  corrections: number;
+}
+
+/** What a client knows about its host, for the debug panel. */
+export interface HostDebug {
+  id: string;
+  name: string | null;
+  open: boolean;
+  snapTick: number;
+  snapAgeMs: number | null;
 }
 
 export interface SessionOptions {
@@ -55,6 +80,8 @@ export class Session {
   // Client-side state
   private hostPeer: Peer | null = null;
   private seq = 0;
+  private snapTick = 0;
+  private snapT = 0;
   // Host-side state
   private clients = new Map<string, HostedClient>();
   private tick = 0;
@@ -107,6 +134,7 @@ export class Session {
     this.hostPeer = null;
     this.clients.clear();
     this.remotes.clear();
+    this.snapT = 0;
     hostPeer?.close();
     for (const c of clients) c.peer.close();
   }
@@ -167,7 +195,7 @@ export class Session {
       onReliable: (m) => this.hostOnReliable(id, m),
       onUnreliable: (m) => this.hostOnUnreliable(id, m),
     });
-    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0 });
+    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0 });
   }
 
   private hostOnReliable(id: string, m: Reliable) {
@@ -192,9 +220,13 @@ export class Session {
     const maxD = PLAYER_SPEED * ((now - c.lastT) / 1000 + 0.25) * 1.5;
     let dx = m.x - c.x, dy = m.y - c.y;
     const d = Math.hypot(dx, dy);
-    if (d > maxD) (dx *= maxD / d), (dy *= maxD / d);
+    if (d > maxD) (dx *= maxD / d), (dy *= maxD / d), c.corrections++;
     const nx = c.x + dx, ny = c.y + dy;
-    if (!isWalkable(this.o.tiles(Math.floor(nx), Math.floor(ny)))) return;
+    if (!isWalkable(this.o.tiles(Math.floor(nx), Math.floor(ny)))) {
+      c.corrections++;
+      return;
+    }
+    c.reports++;
     c.x = nx;
     c.y = ny;
     c.lastSeq = m.seq;
@@ -235,6 +267,7 @@ export class Session {
         if (this.hostPeer !== peer) return;
         this.hostPeer = null;
         this.remotes.clear();
+        this.snapT = 0;
         if (this.role === 'host') return;
         this.role = 'connecting';
         // Host may be gone; the directory will tell us about a new one.
@@ -258,6 +291,8 @@ export class Session {
       onUnreliable: (m) => {
         if (m.t !== 'snap') return;
         const now = performance.now();
+        this.snapTick = m.tick;
+        this.snapT = now;
         for (const [id, x, y] of m.p) pushSample(this.remotes.get(id), now, x, y);
       },
     });
@@ -277,6 +312,42 @@ export class Session {
     } else if (this.role === 'client' && this.hostPeer) {
       this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: round(self.x), y: round(self.y) });
     }
+  }
+
+  // ---------------- debug ----------------
+
+  get signalUp(): boolean {
+    return this.signal.connected;
+  }
+
+  /** The host this client reports to, or null when hosting or not yet assigned. */
+  hostDebug(): HostDebug | null {
+    if (this.role === 'host' || !this.hostId) return null;
+    const now = performance.now();
+    return {
+      id: this.hostId,
+      name: this.remotes.get(this.hostId)?.info.name ?? null,
+      open: !!this.hostPeer?.isOpen,
+      snapTick: this.snapTick,
+      snapAgeMs: this.snapT ? now - this.snapT : null,
+    };
+  }
+
+  /** What each client has reported, when this peer is the host. */
+  clientsDebug(): ClientDebug[] {
+    if (this.role !== 'host') return [];
+    const now = performance.now();
+    return [...this.clients].map(([id, c]) => ({
+      id,
+      name: c.info?.name ?? null,
+      open: c.peer.isOpen,
+      x: c.x,
+      y: c.y,
+      seq: c.lastSeq,
+      reportAgeMs: c.info ? now - c.lastT : null,
+      reports: c.reports,
+      corrections: c.corrections,
+    }));
   }
 
   /** Interpolated position of a remote player for rendering, or null. */

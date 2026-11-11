@@ -1,6 +1,7 @@
 import './style.css';
-import { TileCache, findSpawn, isWalkable, nextZone, step, worldSeed, zoneOf, type PlayerInfo } from '@terra/shared';
+import { TileCache, findSpawn, isWalkable, nextZone, step, worldSeed, zoneName, zoneOf, type PlayerInfo } from '@terra/shared';
 import { inviteSpot, inviteUrl, loadConfig } from './config.ts';
+import { DebugPanel } from './debug.ts';
 import { Input } from './input.ts';
 import { Session } from './net/session.ts';
 import { GameView, type Player } from './render/view.ts';
@@ -59,6 +60,7 @@ async function main() {
     : null;
 
   const status = document.getElementById('status')!;
+  const debug = new DebugPanel(document.getElementById('debug')!, document.getElementById('debugBtn') as HTMLButtonElement);
   const inviteBtn = document.getElementById('invite') as HTMLButtonElement;
   inviteBtn.onclick = async () => {
     const url = inviteUrl(cfg.world, self);
@@ -97,7 +99,10 @@ async function main() {
       const net = !session
         ? 'solo (no signaling server configured)'
         : `${session.role}${session.role === 'host' || session.role === 'client' ? ` · ${session.playerCount} here` : ''}`;
-      status.textContent = `world ${cfg.world} · zone ${zone}\n${net}\n${cfg.name} @ ${Math.floor(self.x)}, ${Math.floor(self.y)}\nQ / E rotate view`;
+      status.textContent =
+        `world ${cfg.world} · zone ${zone} ${zoneName(tiles.seed, zone)}\n${net}\n` +
+        `${cfg.name} @ ${Math.floor(self.x)}, ${Math.floor(self.y)}\nQ / E rotate view · F3 debug`;
+      debug.render({ seed: tiles.seed, zone, self, peerId: cfg.peerId, name: cfg.name, session });
     }
     requestAnimationFrame(loop);
   };
