@@ -38,16 +38,35 @@ infra/            docker-compose: signal + coturn + seed
 - **Join URL**: `https://<pages>/Terra-Ignota/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
 
 ## Milestones
-| # | Deliverable | Done when |
-|---|---|---|
-| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL |
-| M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps |
-| M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move |
-| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues |
-| M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off |
-| M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session |
-| M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable |
-| M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join |
+| # | Deliverable | Done when | Status |
+|---|---|---|---|
+| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Not live yet: merge to `main` and turn on Pages (Settings → Pages → Source: GitHub Actions) |
+| M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
+| M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
+| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Next |
+| M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | |
+| M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
+| M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
+| M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
+
+## Current limitations (what M2 left for later)
+- **No zone handoff yet (M3).** A player joins the zone they spawn in and stays in that session even after walking out of it.
+- **Host election is a placeholder (M3).** The signaling server picks the earliest member of a zone as host. Score-based election, backup peers and handing off when a tab is backgrounded aren't built yet. When the host leaves, the next member takes over in about 1.2s, and that is e2e-tested.
+- **No identity keys yet (M4).** `peerId` is a random id per tab, used only for connections. Name and colour are kept in localStorage. The Ed25519 identity and signed ops come in M4.
+- **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.
+- **The deployed site is solo-only until M7.** Multiplayer on Pages needs the `SIGNAL_URL` repository variable, or `#signal=wss://…` in the link.
+
+## Decisions
+| Decision | Why |
+|---|---|
+| Co-op exploration, not competitive | The host of a zone can always cheat. Co-op play makes that tolerable. |
+| PWA first, no app stores | The link is the install. Browsers can only connect peer-to-peer over WebRTC. |
+| Target hundreds of concurrent players | This sets the zone and star-topology design. A full mesh breaks down at about 20–30 peers. |
+| A ~$5/mo VPS is acceptable | Signaling, TURN for the ~10–20% of players behind strict NATs, and a seed peer. Zero infrastructure would lock those players out. |
+| Terrain is generated, never sent | Only edits travel the network, which is what makes P2P viable. |
+| Signaling server is soft-state only | It never sees gameplay and can be swapped for a DHT later. |
+| 3D isometric (Three.js) instead of 2D Pixi | The developer switched after M2. The top-down chunk painter remains as `render/atlas.ts` for the M5 atlas. |
+| Spawn searched from the centre of zone 0,0 | Spawning at the origin put players either side of a zone border. |
 
 ## Risks
 - **Backgrounded tabs throttle timers**, so a hidden tab hands off hosting immediately.
