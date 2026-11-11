@@ -43,7 +43,7 @@ infra/            docker-compose: signal + coturn + seed
 | M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
-| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Next |
+| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff done (e2e-tested). Next: link neighbouring hosts |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
@@ -73,7 +73,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **Scarcity and inventory:** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts). Options: each player owns their inventory as signed state, or the host or seed arbitrates for each chunk.
 
 ## Current limitations (what M2 left for later)
-- **No zone handoff yet (M3).** A player joins the zone they spawn in and stays in that session even after walking out of it.
+- **Zones can't see each other yet (M3).** Players switch zone sessions 1 chunk past a border (`nextZone` in shared), but neighbouring hosts aren't linked, so players on the other side of a border are invisible.
 - **Host election is a placeholder (M3).** The signaling server picks the earliest member of a zone as host. Score-based election, backup peers and handing off when a tab is backgrounded aren't built yet. When the host leaves, the next member takes over in about 1.2s, and that is e2e-tested.
 - **No identity keys yet (M4).** `peerId` is a random id per tab, used only for connections. Name and colour are kept in localStorage. The Ed25519 identity and signed ops come in M4.
 - **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.

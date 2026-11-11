@@ -47,6 +47,8 @@ export interface SessionOptions {
 export class Session {
   role: Role = 'connecting';
   hostId: string | null = null;
+  /** The zone this session is joined to. Changes via setZone(). */
+  zone: ZoneId;
   readonly remotes = new Map<string, Remote>();
 
   private signal: SignalClient;
@@ -63,9 +65,10 @@ export class Session {
 
   constructor(o: SessionOptions) {
     this.o = o;
+    this.zone = o.zone;
     this.signal = new SignalClient(
       o.signalUrl,
-      () => this.signal.send({ t: 'join', v: PROTOCOL_VERSION, world: o.world, zone: o.zone, peerId: o.peerId }),
+      () => this.join(),
       (m) => this.onSignal(m),
       () => {
         // Lost the directory. Keep existing P2P links; just mark state.
@@ -79,11 +82,41 @@ export class Session {
     return this.remotes.size + 1;
   }
 
+  /**
+   * Move to another zone: drop links to the old zone's host or clients and
+   * re-join through the directory, which promotes a new host for the old zone
+   * if we were hosting it.
+   */
+  setZone(zone: ZoneId) {
+    if (zone === this.zone) return;
+    this.zone = zone;
+    this.dropLinks();
+    this.role = 'connecting';
+    this.hostId = null;
+    this.join(); // No-op while the directory is down; onOpen joins this.zone.
+  }
+
+  private join() {
+    this.signal.send({ t: 'join', v: PROTOCOL_VERSION, world: this.o.world, zone: this.zone, peerId: this.o.peerId });
+  }
+
+  private dropLinks() {
+    clearTimeout(this.retryTimer);
+    const hostPeer = this.hostPeer;
+    const clients = [...this.clients.values()];
+    this.hostPeer = null;
+    this.clients.clear();
+    this.remotes.clear();
+    hostPeer?.close();
+    for (const c of clients) c.peer.close();
+  }
+
   // ---------------- signaling ----------------
 
   private onSignal(m: FromSignal) {
     switch (m.t) {
       case 'host':
+        if (m.zone !== this.zone) break; // Stale: about a zone we've left.
         if (m.hostId === this.o.peerId) this.becomeHost();
         else this.becomeClient(m.hostId);
         break;

@@ -2,6 +2,7 @@ import { expect, test, type Browser, type Page } from '@playwright/test';
 
 interface Probe {
   role: string;
+  zone: string;
   self: { x: number; y: number };
   remotes: Array<{ id: string; name: string; x: number; y: number } | null>;
 }
@@ -12,6 +13,7 @@ async function probe(page: Page): Promise<Probe> {
     const now = performance.now();
     return {
       role: ti.session.role,
+      zone: ti.session.zone,
       self: { x: ti.self.x, y: ti.self.y },
       remotes: [...ti.session.remotes.values()].map((r: any) => {
         const p = ti.session.sample(r, now);
@@ -85,4 +87,67 @@ test('host leaving hands the zone to a remaining player', async ({ browser }) =>
   await expect.poll(async () => (await probe(c)).remotes.filter(Boolean).length, { timeout: 20_000 }).toBe(1);
   expect(Date.now() - t0).toBeLessThan(5000);
   await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(1);
+});
+
+// Mirrors packages/shared/src/constants.ts (ZONE_TILES = 32 * 8, ZONE_MARGIN = 32).
+const ZONE_TILES = 256;
+const ZONE_MARGIN = 32;
+
+async function teleport(page: Page, x: number) {
+  await page.evaluate((x) => ((window as any).__ti.self.x = x), x);
+}
+
+test('crossing a zone border moves the player to that zone, with a margin', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
+
+  const home = (await probe(b)).zone;
+  const [zx, zy] = home.split(',').map(Number);
+  const border = (zx + 1) * ZONE_TILES;
+  const east = `${zx + 1},${zy}`;
+
+  // Just past the border, inside the margin: no switch.
+  await teleport(b, border + 5);
+  await b.waitForTimeout(500);
+  expect((await probe(b)).zone).toBe(home);
+
+  // Past the margin: B leaves A's zone and hosts the empty zone to the east.
+  await teleport(b, border + ZONE_MARGIN + 5);
+  await expect.poll(async () => (await probe(b)).zone).toBe(east);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(0);
+  expect((await probe(a)).role).toBe('host');
+
+  // Back over the border but inside the margin: stays east.
+  await teleport(b, border - 5);
+  await b.waitForTimeout(500);
+  expect((await probe(b)).zone).toBe(east);
+
+  // Past the margin on the way back: rejoins A's zone as a client.
+  await teleport(b, border - ZONE_MARGIN - 5);
+  await expect.poll(async () => (await probe(b)).zone).toBe(home);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
+  await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(1);
+});
+
+test('a host leaving its zone hands the zone to a remaining player', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+
+  const [zx] = (await probe(a)).zone.split(',').map(Number);
+  await teleport(a, (zx + 1) * ZONE_TILES + ZONE_MARGIN + 5);
+
+  await expect.poll(async () => (await probe(a)).role, { timeout: 20_000 }).toBe('host');
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(0);
+  await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(0);
+  expect((await probe(a)).zone).not.toBe((await probe(b)).zone);
 });

@@ -1,5 +1,5 @@
 import './style.css';
-import { TileCache, findSpawn, isWalkable, step, worldSeed, zoneOf, type PlayerInfo } from '@terra/shared';
+import { TileCache, findSpawn, isWalkable, nextZone, step, worldSeed, zoneOf, type PlayerInfo } from '@terra/shared';
 import { inviteSpot, inviteUrl, loadConfig } from './config.ts';
 import { Input } from './input.ts';
 import { Session } from './net/session.ts';
@@ -43,8 +43,8 @@ async function main() {
     zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * Math.pow(1.0015, -e.deltaY)));
   }, { passive: false });
 
-  // M2: one session for the zone you spawned in. Zone handoff comes in M3.
-  const zone = zoneOf(base.x, base.y);
+  // The session follows the player across zone borders (see nextZone).
+  let zone = zoneOf(self.x, self.y);
   const session = cfg.signalUrl
     ? new Session({
         signalUrl: cfg.signalUrl,
@@ -79,6 +79,8 @@ async function main() {
     const next = step(tiles.get, self, view.toWorld(input.dir()), dt);
     self.x = next.x;
     self.y = next.y;
+    zone = nextZone(zone, self.x, self.y);
+    session?.setZone(zone);
 
     const players: Player[] = [];
     if (session) {

@@ -3,6 +3,8 @@ export const CHUNK = 32;
 /** Chunks per zone edge. A zone is the unit of hosting authority. */
 export const ZONE_CHUNKS = 8;
 export const ZONE_TILES = CHUNK * ZONE_CHUNKS;
+/** How far past a zone border (in tiles) a player goes before switching zones. */
+export const ZONE_MARGIN = CHUNK;
 /** Host simulation / network tick rate. */
 export const TICK_HZ = 20;
 /** Player walk speed in tiles per second. */
