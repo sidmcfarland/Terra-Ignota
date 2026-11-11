@@ -6,9 +6,9 @@
  */
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { FromSignal, ToSignal } from '../../../packages/shared/src/protocol.ts';
-
-const PROTOCOL_VERSION = 1;
+import {
+  PROTOCOL_VERSION, type FromSignal, type NeighbourHost, type ToSignal,
+} from '../../../packages/shared/src/protocol.ts';
 const PORT = Number(process.env.PORT ?? 8787);
 const MAX_MSG = 16 * 1024;
 const MAX_MSGS_PER_SEC = 50;
@@ -33,6 +33,29 @@ const send = (c: Client | undefined, m: FromSignal) => {
   if (c && c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(m));
 };
 
+const zoneKey = (world: string, zx: number, zy: number) => `${world}|${zx},${zy}`;
+
+/** Tell the host of zone (zx, zy), if it has one, who hosts each neighbouring zone. */
+function sendNeighbours(world: string, zx: number, zy: number) {
+  const members = zones.get(zoneKey(world, zx, zy));
+  if (!members?.length) return;
+  const hosts: NeighbourHost[] = [];
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    if (!dx && !dy) continue;
+    const m = zones.get(zoneKey(world, zx + dx, zy + dy));
+    if (m?.length) hosts.push({ zone: `${zx + dx},${zy + dy}`, hostId: m[0] });
+  }
+  send(peers.get(members[0]), { t: 'neighbours', zone: `${zx},${zy}`, hosts });
+}
+
+/** A zone's host changed (or the zone appeared or emptied): refresh it and its neighbours. */
+function hostChanged(key: string) {
+  const bar = key.indexOf('|');
+  const world = key.slice(0, bar);
+  const [zx, zy] = key.slice(bar + 1).split(',').map(Number);
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) sendNeighbours(world, zx + dx, zy + dy);
+}
+
 function leaveZone(c: Client) {
   const key = c.zoneKey;
   if (!key || !c.peerId) return;
@@ -44,11 +67,13 @@ function leaveZone(c: Client) {
   if (i >= 0) members.splice(i, 1);
   if (members.length === 0) {
     zones.delete(key);
+    hostChanged(key);
     return;
   }
   const zone = key.slice(key.indexOf('|') + 1);
   if (wasHost) {
     for (const id of members) send(peers.get(id), { t: 'host', zone, hostId: members[0] });
+    hostChanged(key);
   } else {
     send(peers.get(members[0]), { t: 'left', peerId: c.peerId });
   }
@@ -73,13 +98,15 @@ function onMessage(c: Client, msg: ToSignal) {
     if (!members) zones.set(c.zoneKey, (members = []));
     members.push(c.peerId);
     send(c, { t: 'host', zone: msg.zone, hostId: members[0] });
+    if (members.length === 1) hostChanged(c.zoneKey);
     return;
   }
   if (msg.t === 'signal') {
     if (!c.peerId || typeof msg.to !== 'string') return;
     const target = peers.get(msg.to);
     if (!target || target.world !== c.world) return;
-    send(target, { t: 'signal', from: c.peerId, data: msg.data });
+    const link = msg.link === 'border' ? 'border' : 'zone';
+    send(target, { t: 'signal', from: c.peerId, link, data: msg.data });
   }
 }
 

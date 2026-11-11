@@ -2,12 +2,15 @@ import {
   PLAYER_SPEED, PROTOCOL_VERSION, TICK_HZ, isWalkable,
   type FromSignal, type PlayerInfo, type Reliable, type TileLookup, type Unreliable, type ZoneId,
 } from '@terra/shared';
+import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
 import { Peer } from './peer.ts';
 import { SignalClient } from './signal.ts';
 
 /** How far behind real time remote players are rendered, for smoothness. */
 const INTERP_DELAY_MS = 100;
 const BUFFER_MS = 1000;
+/** A neighbouring zone's player disappears after this long without a position. */
+const FOREIGN_TTL_MS = 1000;
 
 export type Role = 'offline' | 'connecting' | 'host' | 'client';
 
@@ -84,6 +87,10 @@ export class Session {
   private snapT = 0;
   // Host-side state
   private clients = new Map<string, HostedClient>();
+  private borders: BorderLinks;
+  /** Players from neighbouring zones, relayed by their hosts (ids into remotes). */
+  private foreign = new Set<string>();
+  private rosterDirty = false;
   private tick = 0;
   private timer: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
@@ -93,6 +100,12 @@ export class Session {
   constructor(o: SessionOptions) {
     this.o = o;
     this.zone = o.zone;
+    this.borders = new BorderLinks(
+      o.peerId,
+      o.iceServers,
+      (to, data) => this.signal.send({ t: 'signal', to, link: 'border', data }),
+      (info, x, y) => this.onForeign(info, x, y),
+    );
     this.signal = new SignalClient(
       o.signalUrl,
       () => this.join(),
@@ -134,6 +147,8 @@ export class Session {
     this.hostPeer = null;
     this.clients.clear();
     this.remotes.clear();
+    this.foreign.clear();
+    this.borders.close();
     this.snapT = 0;
     hostPeer?.close();
     for (const c of clients) c.peer.close();
@@ -148,7 +163,14 @@ export class Session {
         if (m.hostId === this.o.peerId) this.becomeHost();
         else this.becomeClient(m.hostId);
         break;
+      case 'neighbours':
+        if (this.role === 'host' && m.zone === this.zone) this.borders.setNeighbours(m.hosts);
+        break;
       case 'signal': {
+        if (m.link === 'border') {
+          if (this.role === 'host') this.borders.handleSignal(m.from, m.data);
+          break;
+        }
         if (this.role === 'host') {
           if (m.data.kind === 'offer') this.acceptClient(m.from);
           this.clients.get(m.from)?.peer.handleSignal(m.data);
@@ -167,7 +189,7 @@ export class Session {
   }
 
   private sendSignal(to: string) {
-    return (data: Parameters<Peer['handleSignal']>[0]) => this.signal.send({ t: 'signal', to, data });
+    return (data: Parameters<Peer['handleSignal']>[0]) => this.signal.send({ t: 'signal', to, link: 'zone', data });
   }
 
   // ---------------- host role ----------------
@@ -180,6 +202,7 @@ export class Session {
     this.role = 'host';
     this.hostId = this.o.peerId;
     this.remotes.clear();
+    this.foreign.clear();
   }
 
   private acceptClient(id: string) {
@@ -206,6 +229,7 @@ export class Session {
       c.x = Number(m.x) || 0;
       c.y = Number(m.y) || 0;
       c.lastT = performance.now();
+      this.foreign.delete(id); // Now hosted here; no longer relayed by a neighbour.
       this.remotes.set(id, { info: c.info, samples: [{ t: c.lastT, x: c.x, y: c.y }] });
       this.broadcastRoster();
     }
@@ -235,9 +259,43 @@ export class Session {
   }
 
   private broadcastRoster() {
+    this.rosterDirty = false;
     const players: PlayerInfo[] = [this.o.info];
     for (const c of this.clients.values()) if (c.info) players.push(c.info);
+    for (const id of this.foreign) {
+      const r = this.remotes.get(id);
+      if (r) players.push(r.info);
+    }
     for (const c of this.clients.values()) if (c.info) c.peer.sendR({ t: 'roster', players });
+  }
+
+  /** A neighbouring host reported one of its players near our zone. */
+  private onForeign(info: PlayerInfo, x: number, y: number) {
+    if (this.role !== 'host' || info.id === this.o.peerId || this.clients.has(info.id)) return;
+    let r = this.remotes.get(info.id);
+    if (!r) {
+      r = { info, samples: [] };
+      this.remotes.set(info.id, r);
+      this.foreign.add(info.id);
+      this.rosterDirty = true;
+    } else if (r.info.name !== info.name || r.info.hue !== info.hue) {
+      r.info = info;
+      this.rosterDirty = true;
+    }
+    pushSample(r, performance.now(), x, y);
+  }
+
+  /** Forget neighbouring zones' players that have gone quiet (out of range, or their link dropped). */
+  private expireForeign(now: number) {
+    for (const id of this.foreign) {
+      const r = this.remotes.get(id);
+      const last = r?.samples[r.samples.length - 1];
+      if (!last || last.t < now - FOREIGN_TTL_MS) {
+        this.foreign.delete(id);
+        this.remotes.delete(id);
+        this.rosterDirty = true;
+      }
+    }
   }
 
   // ---------------- client role ----------------
@@ -246,6 +304,8 @@ export class Session {
     if (this.role === 'host') {
       for (const c of this.clients.values()) c.peer.close();
       this.clients.clear();
+      this.foreign.clear();
+      this.borders.close();
     }
     if (this.hostPeer?.remoteId === hostId && !this.hostPeer.isOpen) return; // already dialing
     this.hostPeer?.close();
@@ -305,8 +365,19 @@ export class Session {
     const self = this.o.getSelf();
     if (this.role === 'host') {
       this.tick++;
-      const p: Array<[string, number, number]> = [[this.o.peerId, round(self.x), round(self.y)]];
-      for (const [id, c] of this.clients) if (c.info) p.push([id, round(c.x), round(c.y)]);
+      const now = performance.now();
+      const local: LocalPlayer[] = [{ info: this.o.info, x: self.x, y: self.y }];
+      for (const c of this.clients.values()) if (c.info) local.push({ info: c.info, x: c.x, y: c.y });
+      this.borders.tick(local);
+      this.expireForeign(now);
+      if (this.rosterDirty) this.broadcastRoster();
+
+      const p: Array<[string, number, number]> = local.map((l) => [l.info.id, round(l.x), round(l.y)]);
+      for (const id of this.foreign) {
+        const s = this.remotes.get(id)?.samples;
+        const last = s?.[s.length - 1];
+        if (last) p.push([id, round(last.x), round(last.y)]);
+      }
       const snap: Unreliable = { t: 'snap', tick: this.tick, p };
       for (const c of this.clients.values()) if (c.info) c.peer.sendU(snap);
     } else if (this.role === 'client' && this.hostPeer) {
@@ -331,6 +402,11 @@ export class Session {
       snapTick: this.snapTick,
       snapAgeMs: this.snapT ? now - this.snapT : null,
     };
+  }
+
+  /** Links to neighbouring zones' hosts, when this peer is a host. */
+  bordersDebug(): BorderDebug[] {
+    return this.role === 'host' ? this.borders.debug() : [];
   }
 
   /** What each client has reported, when this peer is the host. */
@@ -373,6 +449,7 @@ export class Session {
     this.signal.close();
     this.hostPeer?.close();
     for (const c of this.clients.values()) c.peer.close();
+    this.borders.close();
   }
 }
 

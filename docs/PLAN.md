@@ -43,7 +43,7 @@ infra/            docker-compose: signal + coturn + seed
 | M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
-| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff done (e2e-tested). Next: link neighbouring hosts |
+| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff and neighbouring-host links done (e2e-tested). Next: score-based election |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
@@ -73,7 +73,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **Scarcity and inventory:** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts). Options: each player owns their inventory as signed state, or the host or seed arbitrates for each chunk.
 
 ## Current limitations (what M2 left for later)
-- **Zones can't see each other yet (M3).** Players switch zone sessions 1 chunk past a border (`nextZone` in shared), but neighbouring hosts aren't linked, so players on the other side of a border are invisible.
+- **Seeing across borders is per zone, not per player (M6).** Neighbouring hosts link up (`net/border.ts`) and share players within `BORDER_VIEW` (3 chunks) of each other's zone. Range is measured to the other zone, so everyone in a zone sees a player standing near it, however far away they are. Per-viewer interest management comes in M6.
 - **Host election is a placeholder (M3).** The signaling server picks the earliest member of a zone as host. Score-based election, backup peers and handing off when a tab is backgrounded aren't built yet. When the host leaves, the next member takes over in about 1.2s, and that is e2e-tested.
 - **No identity keys yet (M4).** `peerId` is a random id per tab, used only for connections. Name and colour are kept in localStorage. The Ed25519 identity and signed ops come in M4.
 - **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.
@@ -95,6 +95,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | One host per zone, with a 20% / 30s threshold before switching | Keeps one authority per zone and stops hosts flip-flopping. |
 | Lenient movement checks with a silent snap-back | Co-op makes cheating low-stakes, and strict per-tick checks would rubber-band honest players on bad connections. |
 | 1-chunk margin at zone borders | Stops a player standing on the line from being handed between hosts over and over. |
+| Hosts of neighbouring zones (incl. diagonals) share one direct link, listed by the signal server | Players see across borders while clients still connect only to their own host. The server already knows every zone's host, so it sends each host its neighbours. The lower peer id dials, so each pair has one link. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 
 ## Risks

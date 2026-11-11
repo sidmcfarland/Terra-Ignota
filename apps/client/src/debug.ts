@@ -97,7 +97,7 @@ function zoneLines({ seed, zone, self }: DebugState): string[] {
   return lines;
 }
 
-function netLines({ session, peerId, name }: DebugState): string[] {
+function netLines({ session, peerId, name, seed }: DebugState): string[] {
   const lines = [`YOU    ${name}  id ${short(peerId)}`];
   if (!session) return [...lines, 'NET    solo (no signaling server configured)'];
   lines.push(`ROLE   ${session.role}  ·  signal ${session.signalUp ? 'up' : 'down'}`);
@@ -122,6 +122,16 @@ function netLines({ session, peerId, name }: DebugState): string[] {
         `  ${(c.name ?? '(joining)').slice(0, 19).padEnd(20)}${short(c.id).padEnd(10)}` +
           `${c.x.toFixed(1).padStart(8)}${c.y.toFixed(1).padStart(8)}${ms(c.reportAgeMs).padStart(8)}` +
           `${String(c.seq).padStart(7)}${String(c.corrections).padStart(7)}${c.open ? '' : '  link closed'}`,
+      );
+    }
+
+    const borders = session.bordersDebug();
+    lines.push(`NEIGHBOURS ${borders.length}  (hosts of adjacent zones)`);
+    for (const b of borders) {
+      const where = b.zone ? label(seed, b.zone) : '(zone not listed yet)';
+      lines.push(
+        `  ${where.padEnd(24)}host ${short(b.hostId)}  ${b.open ? 'open' : 'connecting'}` +
+          `  ·  ${b.visible} near you, ${ms(b.edgeAgeMs)} ago`,
       );
     }
   }

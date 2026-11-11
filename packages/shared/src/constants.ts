@@ -5,6 +5,8 @@ export const ZONE_CHUNKS = 8;
 export const ZONE_TILES = CHUNK * ZONE_CHUNKS;
 /** How far past a zone border (in tiles) a player goes before switching zones. */
 export const ZONE_MARGIN = CHUNK;
+/** A host shares its players with a neighbouring zone's host when they're within this many tiles of that zone. */
+export const BORDER_VIEW = 3 * CHUNK;
 /** Host simulation / network tick rate. */
 export const TICK_HZ = 20;
 /** Player walk speed in tiles per second. */
