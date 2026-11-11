@@ -47,6 +47,7 @@ export class GameView {
   private yaw = Math.PI / 4;
   private targetYaw = Math.PI / 4;
   private lastT = performance.now();
+  private size = { w: 0, h: 0 };
 
   constructor(tiles: TileCache) {
     this.renderer = new WebGLRenderer({ antialias: true });
@@ -86,9 +87,11 @@ export class GameView {
     this.yaw += (this.targetYaw - this.yaw) * Math.min(1, dt * TURN_SPEED);
 
     const w = innerWidth, h = innerHeight;
-    this.renderer.setSize(w, h, false);
-    this.canvas.style.width = `${w}px`;
-    this.canvas.style.height = `${h}px`;
+    // setSize reassigns canvas.width, which reallocates the drawing buffer; only do it on resize.
+    if (w !== this.size.w || h !== this.size.h) {
+      this.size = { w, h };
+      this.renderer.setSize(w, h);
+    }
 
     const groundY = Math.max(this.terrain.heightAt(self.x, self.y), WATER_Y - 0.25);
     const target = new Vector3(self.x, groundY, self.y);

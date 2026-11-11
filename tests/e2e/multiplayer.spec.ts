@@ -25,7 +25,9 @@ async function join(browser: Browser, world: string): Promise<Page> {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.error('pageerror:', e.message));
-  await page.goto(`/#w=${world}`);
+  // render=0: these tests check networking state only, and software WebGL in
+  // headless Chromium is slow enough to break handoff timings.
+  await page.goto(`/#w=${world}&render=0`);
   await page.waitForFunction(() => (window as any).__ti?.session);
   return page;
 }

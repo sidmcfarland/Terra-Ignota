@@ -13,6 +13,10 @@ async function main() {
     if (new URLSearchParams(location.hash.slice(1)).get('w') !== cfg.world) location.reload();
   });
 
+  // `#render=0` runs the game loop without drawing. The e2e tests use it: headless
+  // Chromium rasterises WebGL on the CPU, which starves the networking timers.
+  const draw = new URLSearchParams(location.hash.slice(1)).get('render') !== '0';
+
   const tiles = new TileCache(worldSeed(cfg.world));
   const view = new GameView(tiles);
   document.getElementById('game')!.appendChild(view.canvas);
@@ -84,7 +88,7 @@ async function main() {
       }
     }
     players.push({ info, x: self.x, y: self.y, self: true });
-    view.frame(self, players, zoom);
+    if (draw) view.frame(self, players, zoom);
 
     if (now - hudT > 250) {
       hudT = now;
