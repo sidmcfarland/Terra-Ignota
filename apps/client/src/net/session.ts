@@ -1,6 +1,8 @@
 import {
-  PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ, canHost, hostScore, isWalkable,
-  type FromSignal, type HostMetrics, type PlayerInfo, type Reliable, type TileLookup, type Unreliable, type ZoneId,
+  EDITS_PER_SEC, EDIT_REACH, PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ, ZONE_CHUNKS,
+  canHost, chunkKey, hostScore, isWalkable, isWellFormed, parseZone, verifyOp,
+  type FromSignal, type HostMetrics, type Identity, type PlayerInfo, type Reliable, type TileEdits, type TileLookup,
+  type TileOp, type Unreliable, type ZoneId,
 } from '@terra/shared';
 import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
 import type { HostingProfile } from './hosting.ts';
@@ -24,6 +26,8 @@ const STATE_EVERY_TICKS = 4;
 const HOST_SILENCE_MS = 1000;
 /** A successor only uses backup state younger than this. */
 const STATE_MAX_AGE_MS = 5000;
+/** Ops per 'edits' message, to keep data-channel messages small. */
+const OPS_PER_MESSAGE = 200;
 
 /** Zone state streamed from the host to its backups. */
 interface BackupState {
@@ -54,6 +58,11 @@ interface HostedClient {
   corrections: number;
   /** Smoothed round trip to this client, once measured. */
   rttMs: number | null;
+  /** The client's public key (from hello): the only author whose edits it may send. */
+  pub?: string;
+  /** Edit rate limiting: edits allowed this second, and when the second started. */
+  editBudget: number;
+  editT: number;
 }
 
 /** What a host knows about one of its clients, for the debug panel. */
@@ -106,6 +115,11 @@ export interface SessionOptions {
   zone: ZoneId;
   peerId: string;
   info: PlayerInfo;
+  identity: Identity;
+  /** This peer's replica of the world's edits (already loaded from storage). */
+  edits: TileEdits;
+  /** Called for each op that changed the replica, to persist it. */
+  onMerged(op: TileOp): void;
   profile: HostingProfile;
   iceServers: RTCIceServer[];
   tiles: TileLookup;
@@ -164,6 +178,7 @@ export class Session {
       o.iceServers,
       (to, data) => this.signal.send({ t: 'signal', to, link: 'border', data }),
       (info, x, y) => this.onForeign(info, x, y),
+      (ops) => void this.receiveOps(ops, null),
     );
     this.signal = new SignalClient(
       o.signalUrl,
@@ -252,6 +267,95 @@ export class Session {
     for (const c of clients) c.peer.close();
   }
 
+  // ---------------- edits ----------------
+
+  /**
+   * Pass on an edit this peer just made (already merged locally): to the host
+   * when a client, or to clients and neighbouring hosts when the host. With no
+   * host yet, it stays local and goes out on the next sync.
+   */
+  publish(op: TileOp) {
+    if (this.role === 'host') this.spread([op], null);
+    else if (this.role === 'client') this.hostPeer?.sendR({ t: 'edit', op });
+  }
+
+  /** The chunk keys of the zone this session is in. */
+  private zoneChunks(): string[] {
+    const [zx, zy] = parseZone(this.zone);
+    const keys: string[] = [];
+    for (let cy = 0; cy < ZONE_CHUNKS; cy++) {
+      for (let cx = 0; cx < ZONE_CHUNKS; cx++) keys.push(chunkKey(zx * ZONE_CHUNKS + cx, zy * ZONE_CHUNKS + cy));
+    }
+    return keys;
+  }
+
+  private chunkOps(keys: string[]): TileOp[] {
+    return keys.flatMap((k) => this.o.edits.chunkOps(k));
+  }
+
+  /** Verify untrusted ops, merge them, persist what changed, and spread it if hosting. */
+  private async receiveOps(ops: unknown, from: string | null): Promise<TileOp[]> {
+    if (!Array.isArray(ops)) return [];
+    const valid = (await Promise.all(
+      ops.slice(0, 5000).map(async (op) => (isWellFormed(op) && (await verifyOp(this.o.world, op)) ? op : null)),
+    )).filter((op): op is TileOp => op !== null);
+    const changed = valid.filter((op) => this.o.edits.merge(op));
+    for (const op of changed) this.o.onMerged(op);
+    if (changed.length && this.role === 'host') this.spread(changed, from);
+    return changed;
+  }
+
+  /** Host: send ops to every client (except the one they came from) and to neighbouring hosts. */
+  private spread(ops: TileOp[], except: string | null) {
+    for (let i = 0; i < ops.length; i += OPS_PER_MESSAGE) {
+      const msg: Reliable = { t: 'edits', ops: ops.slice(i, i + OPS_PER_MESSAGE) };
+      for (const [id, c] of this.clients) if (c.info && id !== except) c.peer.sendR(msg);
+    }
+    this.borders.sendOps(ops);
+  }
+
+  private sendOps(peer: Peer, ops: TileOp[]) {
+    for (let i = 0; i < ops.length; i += OPS_PER_MESSAGE) peer.sendR({ t: 'edits', ops: ops.slice(i, i + OPS_PER_MESSAGE) });
+  }
+
+  /** Host: a client's new edit. Accept it only from its author, near where the client is, within the rate limit. */
+  private async hostOnEdit(id: string, op: unknown) {
+    const c = this.clients.get(id);
+    if (!c?.info || !c.pub || !isWellFormed(op) || op.author !== c.pub) return;
+    const now = performance.now();
+    if (now - c.editT > 1000) (c.editT = now), (c.editBudget = EDITS_PER_SEC);
+    if (c.editBudget-- <= 0) return;
+    if (Math.hypot(op.x + 0.5 - c.x, op.y + 0.5 - c.y) > EDIT_REACH + 1) return;
+    await this.receiveOps([op], id);
+  }
+
+  /** Host: a client's digests. Send it what it lacks; ask for what we lack. */
+  private hostOnSync(id: string, d: unknown) {
+    const c = this.clients.get(id);
+    if (!c || !d || typeof d !== 'object') return;
+    const theirs = d as Record<string, unknown>;
+    const send: string[] = [], want: string[] = [];
+    for (const key of this.zoneChunks()) {
+      const ours = this.o.edits.digest(key);
+      const them = typeof theirs[key] === 'string' ? (theirs[key] as string) : '';
+      if (ours === them) continue;
+      if (ours) send.push(key);
+      if (them) want.push(key);
+    }
+    this.sendOps(c.peer, this.chunkOps(send));
+    if (want.length) c.peer.sendR({ t: 'syncWant', chunks: want });
+  }
+
+  /** Client: right after connecting, tell the host what we hold for this zone. */
+  private sendSync(peer: Peer) {
+    const d: Record<string, string> = {};
+    for (const key of this.zoneChunks()) {
+      const dg = this.o.edits.digest(key);
+      if (dg) d[key] = dg;
+    }
+    peer.sendR({ t: 'sync', d });
+  }
+
   // ---------------- signaling ----------------
 
   private onSignal(m: FromSignal) {
@@ -337,14 +441,20 @@ export class Session {
       onReliable: (m) => this.hostOnReliable(id, m),
       onUnreliable: (m) => this.hostOnUnreliable(id, m),
     });
-    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0, rttMs: null });
+    this.clients.set(id, {
+      peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0, rttMs: null, editBudget: EDITS_PER_SEC, editT: 0,
+    });
   }
 
   private hostOnReliable(id: string, m: Reliable) {
     const c = this.clients.get(id);
     if (!c) return;
+    if (m.t === 'edit') return void this.hostOnEdit(id, m.op);
+    if (m.t === 'edits') return void (c.info && this.receiveOps(m.ops, id));
+    if (m.t === 'sync') return this.hostOnSync(id, m.d);
     if (m.t === 'hello' && !c.info) {
       c.info = { id, name: String(m.info.name).slice(0, 32), hue: Number(m.info.hue) % 360 || 0 };
+      if (typeof m.pub === 'string' && m.pub.length <= 64) c.pub = m.pub;
       c.x = Number(m.x) || 0;
       c.y = Number(m.y) || 0;
       c.lastT = performance.now();
@@ -459,7 +569,8 @@ export class Session {
       onOpen: () => {
         this.role = 'client';
         const self = this.o.getSelf();
-        peer.sendR({ t: 'hello', info: this.o.info, x: self.x, y: self.y });
+        peer.sendR({ t: 'hello', info: this.o.info, x: self.x, y: self.y, pub: this.o.identity.pub });
+        this.sendSync(peer);
       },
       onClose: () => {
         if (this.hostPeer !== peer) return;
@@ -475,6 +586,12 @@ export class Session {
         }, 2000);
       },
       onReliable: (m) => {
+        if (m.t === 'edits') return void this.receiveOps(m.ops, null);
+        if (m.t === 'syncWant') {
+          const zone = new Set(this.zoneChunks());
+          const keys = Array.isArray(m.chunks) ? m.chunks.filter((k) => typeof k === 'string' && zone.has(k)) : [];
+          return this.sendOps(peer, this.chunkOps(keys));
+        }
         if (m.t !== 'roster') return;
         const ids = new Set<string>();
         for (const p of m.players) {

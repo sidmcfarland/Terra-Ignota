@@ -34,6 +34,8 @@ const BASE: Record<number, [number, number, number]> = {
   [Tile.Meadow]: [143, 179, 90],
   [Tile.Rock]: [128, 124, 112],
   [Tile.Snow]: [236, 240, 244],
+  [Tile.Path]: [168, 140, 104],
+  [Tile.Wall]: [84, 82, 78],
 };
 if (Object.keys(BASE).length !== TILE_COUNT) throw new Error('missing tile colors');
 
@@ -57,6 +59,17 @@ export class Terrain {
 
   constructor(tiles: TileCache) {
     this.tiles = tiles;
+    // An edit changed a chunk: drop its mesh so the next update rebuilds it.
+    tiles.onChunkChange((cx, cy) => this.drop(`${cx},${cy}`));
+  }
+
+  private drop(key: string) {
+    const c = this.chunks.get(key);
+    if (!c) return;
+    this.group.remove(c.group);
+    c.ground.dispose();
+    c.trees?.dispose();
+    this.chunks.delete(key);
   }
 
   /** Ground height at a continuous world position (bilinear over tile corners). */
@@ -84,14 +97,9 @@ export class Terrain {
       this.chunks.set(`${cx},${cy}`, c);
     }
 
-    for (const [key, c] of this.chunks) {
+    for (const key of [...this.chunks.keys()]) {
       const [cx, cy] = key.split(',').map(Number);
-      if (Math.abs(cx - ccx) > r + 2 || Math.abs(cy - ccy) > r + 2) {
-        this.group.remove(c.group);
-        c.ground.dispose();
-        c.trees?.dispose();
-        this.chunks.delete(key);
-      }
+      if (Math.abs(cx - ccx) > r + 2 || Math.abs(cy - ccy) > r + 2) this.drop(key);
     }
   }
 

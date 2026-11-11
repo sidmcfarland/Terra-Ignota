@@ -1,6 +1,6 @@
 import {
   BORDER_VIEW, ZONE_TILES, parseZone,
-  type NeighbourHost, type PlayerInfo, type SignalData, type ZoneId,
+  type NeighbourHost, type PlayerInfo, type SignalData, type TileOp, type ZoneId,
 } from '@terra/shared';
 import { Peer } from './peer.ts';
 
@@ -52,17 +52,30 @@ export class BorderLinks {
   private readonly iceServers: RTCIceServer[];
   private readonly sendSignal: (to: string, data: SignalData) => void;
   private readonly onPlayer: (info: PlayerInfo, x: number, y: number) => void;
+  private readonly onOps: (ops: unknown) => void;
 
   constructor(
     selfId: string,
     iceServers: RTCIceServer[],
     sendSignal: (to: string, data: SignalData) => void,
     onPlayer: (info: PlayerInfo, x: number, y: number) => void,
+    onOps: (ops: unknown) => void,
   ) {
     this.selfId = selfId;
     this.iceServers = iceServers;
     this.sendSignal = sendSignal;
     this.onPlayer = onPlayer;
+    this.onOps = onOps;
+  }
+
+  /** Pass edits to each neighbouring host whose zone they're near (within BORDER_VIEW). */
+  sendOps(ops: TileOp[]) {
+    for (const link of this.links.values()) {
+      if (!link.zone || !link.peer.isOpen) continue;
+      const [zx, zy] = parseZone(link.zone);
+      const near = ops.filter((op) => distToZone(op.x + 0.5, op.y + 0.5, zx, zy) <= BORDER_VIEW);
+      for (let i = 0; i < near.length; i += 200) link.peer.sendR({ t: 'edits', ops: near.slice(i, i + 200) });
+    }
   }
 
   /** The directory's list of neighbouring hosts. Opens, keeps or closes links to match. */
@@ -140,6 +153,7 @@ export class BorderLinks {
         }
       },
       onReliable: (m) => {
+        if (m.t === 'edits') return this.onOps(m.ops);
         if (m.t !== 'border') return;
         link.roster = new Map(m.players.map((p) => [p.id, sanitize(p)]));
       },

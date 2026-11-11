@@ -302,3 +302,86 @@ test('neighbouring hosts link up so players see across a zone border', async ({ 
   expect(await sees(b, aId)).toBe(true);
   expect((await probe(a)).borders).toBe(1); // The link stays up; B just has nothing to share.
 });
+
+// ---- World edits (M4) ----
+
+const PATH = 8, WALL = 9; // Mirrors Tile.Path / Tile.Wall in packages/shared/src/worldgen.ts.
+
+/** The edited tile at (x, y) on a page, or null if that spot isn't edited there. */
+const editAt = (p: Page, x: number, y: number) =>
+  p.evaluate(([x, y]) => (window as any).__ti.edits.get(x, y)?.tile ?? null, [x, y] as const);
+
+/** Paint a tile right next to the page's player, within reach. Returns its coordinates. */
+async function paintNext(p: Page, dx: number, tile: number | null): Promise<[number, number]> {
+  return p.evaluate(async ([dx, tile]) => {
+    const ti = (window as any).__ti;
+    const x = Math.floor(ti.self.x) + dx, y = Math.floor(ti.self.y);
+    await ti.paint(x, y, tile);
+    return [x, y] as [number, number];
+  }, [dx, tile] as const);
+}
+
+test('edits replicate through the host and survive a reload', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+
+  // A client's edit reaches the host; the host's edit reaches the client.
+  const [bx, by] = await paintNext(b, 2, PATH);
+  await expect.poll(() => editAt(a, bx, by), { timeout: 10_000 }).toBe(PATH);
+  const [ax, ay] = await paintNext(a, -2, WALL);
+  await expect.poll(() => editAt(b, ax, ay), { timeout: 10_000 }).toBe(WALL);
+  // The edited tile is what movement and the host's checks see.
+  expect(await a.evaluate(([x, y]) => (window as any).__ti.tiles.get(x, y), [ax, ay] as const)).toBe(WALL);
+
+  // The B key paints the tile in front of the player (facing south before moving).
+  const front = await b.evaluate(() => {
+    const ti = (window as any).__ti;
+    return [Math.floor(ti.self.x), Math.floor(ti.self.y + 1)] as [number, number];
+  });
+  await b.keyboard.press('b');
+  await expect.poll(() => editAt(a, front[0], front[1]), { timeout: 10_000 }).toBe(PATH);
+
+  // Reloading B loads its edits from IndexedDB before it reconnects.
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.edits);
+  expect(await editAt(b, bx, by)).toBe(PATH);
+  expect(await editAt(b, ax, ay)).toBe(WALL);
+});
+
+test('newcomers catch up from the host, and a returning player brings edits back', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  // D is alone in the world and paints; then its tab closes (its storage stays).
+  const d = await join(browser, world);
+  await expect.poll(async () => (await probe(d)).role).toBe('host');
+  const [dx, dy] = await paintNext(d, 3, PATH);
+  const dCtx = d.context();
+  await d.close();
+
+  // E arrives to an empty zone and hosts it, knowing nothing of D's edit.
+  const e = await join(browser, world);
+  await expect.poll(async () => (await probe(e)).role, { timeout: 10_000 }).toBe('host');
+  expect(await editAt(e, dx, dy)).toBe(null);
+
+  // D comes back in the same browser: it syncs with E and hands over its edit.
+  const d2 = await dCtx.newPage();
+  await d2.goto(`/#w=${world}&render=0&debug=1`);
+  await d2.waitForFunction(() => (window as any).__ti?.session);
+  await expect.poll(async () => (await probe(d2)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(() => editAt(e, dx, dy), { timeout: 10_000 }).toBe(PATH);
+
+  // F, brand new, gets it from the host on joining.
+  const f = await join(browser, world);
+  await expect.poll(async () => (await probe(f)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(() => editAt(f, dx, dy), { timeout: 10_000 }).toBe(PATH);
+
+  // A later edit wins everywhere (last writer wins), including reverting to the generated tile.
+  // F walks onto the tile first: the host only accepts edits within reach of where it sees F.
+  await f.evaluate(([x, y]) => Object.assign((window as any).__ti.self, { x: x + 0.5, y: y + 0.5 }), [dx, dy] as const);
+  await f.waitForTimeout(1000);
+  await f.evaluate(([x, y]) => (window as any).__ti.paint(x, y, null), [dx, dy] as const);
+  await expect.poll(() => editAt(e, dx, dy), { timeout: 10_000 }).toBe(null);
+  await expect.poll(() => editAt(d2, dx, dy), { timeout: 10_000 }).toBe(null);
+});

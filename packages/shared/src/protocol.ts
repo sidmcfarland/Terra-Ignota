@@ -1,7 +1,8 @@
+import type { TileOp } from './edits.ts';
 import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 
@@ -56,7 +57,16 @@ export interface PlayerInfo {
 
 /** Reliable channel. */
 export type Reliable =
-  | { t: 'hello'; info: PlayerInfo; x: number; y: number }
+  /** Client to host on connect. pub is the device's Ed25519 public key, the author of its edits. */
+  | { t: 'hello'; info: PlayerInfo; x: number; y: number; pub: string }
+  /** Client to host: a new edit by this client. */
+  | { t: 'edit'; op: TileOp }
+  /** Any direction (including between neighbouring hosts): edits to merge. */
+  | { t: 'edits'; ops: TileOp[] }
+  /** Client to host on connect: a digest per zone chunk the client holds edits for. */
+  | { t: 'sync'; d: Record<string, string> }
+  /** Host to client: chunks where the client may have edits the host lacks; send them. */
+  | { t: 'syncWant'; chunks: string[] }
   | { t: 'roster'; players: PlayerInfo[] }
   /** Host to neighbouring host: the players in the sender's zone. */
   | { t: 'border'; players: PlayerInfo[] }

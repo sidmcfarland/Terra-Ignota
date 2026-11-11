@@ -12,6 +12,8 @@ const BASE: Record<number, [number, number, number]> = {
   [Tile.Meadow]: [143, 179, 90],
   [Tile.Rock]: [138, 133, 119],
   [Tile.Snow]: [232, 238, 242],
+  [Tile.Path]: [168, 140, 104],
+  [Tile.Wall]: [84, 82, 78],
 };
 if (Object.keys(BASE).length !== TILE_COUNT) throw new Error('missing tile colors');
 

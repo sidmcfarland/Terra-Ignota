@@ -1,4 +1,4 @@
-import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type ZoneId } from '@terra/shared';
+import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type TileEdits, type ZoneId } from '@terra/shared';
 import type { Session } from './net/session.ts';
 
 const STORE_KEY = 'ti.debug';
@@ -10,6 +10,9 @@ export interface DebugState {
   peerId: string;
   name: string;
   session: Session | null;
+  edits: TileEdits;
+  /** This device's public key, the author id on its edits. */
+  author: string;
 }
 
 /**
@@ -54,7 +57,7 @@ export class DebugPanel {
 
   render(s: DebugState) {
     if (!this.visible) return;
-    this.el.textContent = [...zoneLines(s), '', ...netLines(s)].join('\n');
+    this.el.textContent = [...zoneLines(s), '', ...netLines(s), '', ...editLines(s)].join('\n');
   }
 }
 
@@ -95,6 +98,14 @@ function zoneLines({ seed, zone, self }: DebugState): string[] {
     });
   }
   return lines;
+}
+
+function editLines({ edits, author, self }: DebugState): string[] {
+  const here = edits.get(Math.floor(self.x), Math.floor(self.y));
+  return [
+    `EDITS  ${edits.size} tiles edited  ·  clock ${edits.clock}  ·  you sign as ${author.slice(0, 8)}`,
+    here ? `       under you: by ${here.author.slice(0, 8)} at clock ${here.clock}` : '       under you: not edited',
+  ];
 }
 
 function netLines({ session, peerId, name, seed }: DebugState): string[] {

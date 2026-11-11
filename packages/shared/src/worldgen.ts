@@ -11,10 +11,13 @@ export const Tile = {
   Meadow: 5,
   Rock: 6,
   Snow: 7,
+  // Player-made only: worldgen never produces these, so adding them changed no world.
+  Path: 8,
+  Wall: 9,
 } as const;
 export type Tile = (typeof Tile)[keyof typeof Tile];
 
-export const TILE_COUNT = 8;
+export const TILE_COUNT = 10;
 
 export function worldSeed(worldId: string): number {
   return hashString(`terra-ignota:${worldId}`);
@@ -54,7 +57,7 @@ export function generateChunk(seed: number, cx: number, cy: number): Uint8Array 
 }
 
 export function isWalkable(t: Tile): boolean {
-  return t !== Tile.DeepWater && t !== Tile.Snow;
+  return t !== Tile.DeepWater && t !== Tile.Snow && t !== Tile.Wall;
 }
 
 export function isWading(t: Tile): boolean {
