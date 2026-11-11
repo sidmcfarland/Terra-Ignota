@@ -16,8 +16,6 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #status { color: var(--muted); white-space: pre; font-variant-numeric: tabular-nums; }
 #invite { margin-top: 8px; font: inherit; color: var(--bg); background: var(--accent); border: 0;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-#view { margin-top: 8px; margin-left: 4px; font: inherit; color: var(--text); background: transparent;
-  border: 1px solid var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
 .labels3d { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .labels3d div { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px; color: #fff;
   text-shadow: 0 0 3px #000, 0 0 3px #000; }

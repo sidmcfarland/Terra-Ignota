@@ -11,7 +11,7 @@ npm install
 npm run dev            # signaling server on :8787 + client on :5173
 ```
 
-Open http://localhost:5173 in two windows. Move with WASD or the arrow keys, drag on touch screens, and zoom with the mouse wheel. To play from a phone on the same Wi-Fi, open `http://<your-LAN-IP>:5173`.
+Open http://localhost:5173 in two windows. Move with WASD or the arrow keys, drag on touch screens, zoom with the mouse wheel, and rotate the view with Q / E. To play from a phone on the same Wi-Fi, open `http://<your-LAN-IP>:5173`.
 
 URL hash parameters:
 - `w=<world>`: world id. Each id is a different procedurally generated world.
@@ -30,7 +30,7 @@ npm run e2e            # real browsers connecting over WebRTC
 
 ```
 packages/shared   worldgen, movement, protocol (runs in browser and Node)
-apps/client       PWA (Vite + PixiJS)
+apps/client       PWA (Vite + Three.js)
 apps/signal       signaling + zone directory server
 ```
 

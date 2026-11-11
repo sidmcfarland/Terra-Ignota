@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@terra/shared": "*",
-    "pixi.js": "^8.6.0",
     "three": "^0.170.0"
   },
   "devDependencies": {

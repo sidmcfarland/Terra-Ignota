@@ -10,9 +10,15 @@ import {
   Vector3,
   WebGLRenderer,
 } from 'three';
-import type { TileCache } from '@terra/shared';
-import type { Player, View } from '../view.ts';
-import { Terrain3D, WATER_Y } from './terrain3d.ts';
+import type { PlayerInfo, TileCache } from '@terra/shared';
+import { Terrain, WATER_Y } from './terrain.ts';
+
+export interface Player {
+  info: PlayerInfo;
+  x: number;
+  y: number;
+  self: boolean;
+}
 
 /** True isometric pitch: atan(1/√2). */
 const PITCH = Math.atan(1 / Math.SQRT2);
@@ -29,13 +35,13 @@ interface Avatar {
 const avatarGeo = new CapsuleGeometry(0.22, 0.45, 4, 10).translate(0, 0.45, 0);
 
 /** Three.js renderer with an orthographic isometric camera. Q / E rotate the view by 90°. */
-export class View3D implements View {
+export class GameView {
   readonly canvas: HTMLCanvasElement;
   private renderer: WebGLRenderer;
   private scene = new Scene();
   private camera = new OrthographicCamera(-1, 1, 1, -1, 1, CAM_DIST * 2);
   private sun = new DirectionalLight(0xfff1dc, 2.8);
-  private terrain: Terrain3D;
+  private terrain: Terrain;
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -48,7 +54,7 @@ export class View3D implements View {
     this.renderer.setClearColor(0x0e1a24);
     this.canvas = this.renderer.domElement;
 
-    this.terrain = new Terrain3D(tiles);
+    this.terrain = new Terrain(tiles);
     this.scene.add(this.terrain.group);
     this.scene.add(new HemisphereLight(0xcfe3ff, 0x3a2e22, 0.75));
     this.sun.position.set(-0.6, 1, 0.35).multiplyScalar(100);

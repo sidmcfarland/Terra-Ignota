@@ -1,6 +1,6 @@
 # Terra Ignota — Plan
 
-A co-op exploration MMO in a 2D top-down view. It runs as an installable web app (PWA): open a URL and you're in. Players' devices host the world. The only central piece is one ~$5/mo VPS that runs signaling, a TURN relay and an always-on seed peer.
+A co-op exploration MMO in an isometric 3D view. It runs as an installable web app (PWA): open a URL and you're in. Players' devices host the world. The only central piece is one ~$5/mo VPS that runs signaling, a TURN relay and an always-on seed peer.
 
 ## Core loop
 The world is endless, generated from a seed, and starts out **unknown**. Explorers fog-reveal it together into a **shared atlas**. Players gather, build waystations and name places, and their discoveries persist for everyone.
@@ -9,7 +9,7 @@ The world is endless, generated from a seed, and starts out **unknown**. Explore
 | Concern | Choice |
 |---|---|
 | Language | TypeScript everywhere (shared sim runs in browser + Node) |
-| Client | Vite + PixiJS v8 + vite-plugin-pwa, hosted on GitHub Pages |
+| Client | Vite + Three.js + vite-plugin-pwa, hosted on GitHub Pages |
 | P2P transport | WebRTC data channels (unreliable for movement, reliable for ops) |
 | Signaling + zone directory | Small Node WebSocket server (VPS) |
 | NAT traversal | Public STUN + coturn TURN (VPS) |
