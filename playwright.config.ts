@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   webServer: [
-    { command: 'PORT=8787 npm -w @terra/signal start', url: 'http://localhost:8787/health', reuseExistingServer: !process.env.CI },
+    { command: 'npm -w @terra/signal start', env: { PORT: '8787' }, url: 'http://localhost:8787/health', reuseExistingServer: !process.env.CI },
     { command: 'npm run build && npm -w @terra/client run preview -- --strictPort', url: 'http://localhost:4173', reuseExistingServer: !process.env.CI, timeout: 120_000 },
   ],
 });
