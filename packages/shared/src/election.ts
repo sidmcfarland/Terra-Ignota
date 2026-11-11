@@ -32,6 +32,8 @@ export const STATUS_INTERVAL_MS = 2000;
 export const HOST_SWITCH_MARGIN = 0.2;
 /** ...continuously for this long before hosting moves. */
 export const HOST_SWITCH_HOLD_MS = 30_000;
+/** Members the host streams its state to, ready to take over. */
+export const BACKUP_COUNT = 2;
 
 /** Hard limits: a peer that fails these never hosts while one that passes is available. */
 export function canHost(m: HostMetrics): boolean {
@@ -89,23 +91,64 @@ export interface Challenge {
 }
 
 /**
- * The best host among candidates (in join order): the highest-scoring eligible
- * peer; if none is eligible, the highest-scoring peer anyway so play goes on;
- * if no statuses have arrived yet, the earliest to join. Ties go to the lower id.
+ * Candidates (given in join order) from best to worst host: eligible peers by
+ * score, then ineligible peers by score, then peers with no status yet in join
+ * order. Score ties go to the lower id.
+ */
+export function rankCandidates(cands: Candidate[]): string[] {
+  const n = cands.length;
+  const byScore = (pool: Candidate[]) =>
+    pool
+      .map((c) => ({ id: c.id, s: hostScore(c.m!, n) }))
+      .sort((a, b) => b.s - a.s || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((c) => c.id);
+  const known = cands.filter((c) => c.m);
+  return [
+    ...byScore(known.filter((c) => canHost(c.m!))),
+    ...byScore(known.filter((c) => !canHost(c.m!))),
+    ...cands.filter((c) => !c.m).map((c) => c.id),
+  ];
+}
+
+/**
+ * The best host: the highest-scoring eligible peer; if none is eligible, the
+ * highest-scoring peer anyway so play goes on; with no statuses yet, the
+ * earliest to join.
  */
 export function bestHost(cands: Candidate[]): string | null {
-  if (cands.length === 0) return null;
-  const n = cands.length;
-  const rank = (pool: Candidate[]) => {
-    let best: Candidate | null = null, bestS = -Infinity;
-    for (const c of pool) {
-      const s = hostScore(c.m!, n);
-      if (s > bestS || (s === bestS && best && c.id < best.id)) (best = c), (bestS = s);
-    }
-    return best?.id ?? null;
-  };
-  const known = cands.filter((c) => c.m);
-  return rank(known.filter((c) => canHost(c.m!))) ?? rank(known) ?? cands[0].id;
+  return rankCandidates(cands)[0] ?? null;
+}
+
+/**
+ * The members the host streams its state to. Current backups keep their place
+ * while they're still here and able to host (so near-equal scores don't
+ * reshuffle them on every heartbeat); empty places go to the best-ranked rest.
+ */
+export function pickBackups(
+  cands: Candidate[],
+  host: string | null,
+  current: string[] = [],
+  n = BACKUP_COUNT,
+): string[] {
+  const kept = current.filter((id) => {
+    if (id === host) return false;
+    const c = cands.find((c) => c.id === id);
+    return !!c && (!c.m || canHost(c.m));
+  });
+  const rest = rankCandidates(cands).filter((id) => id !== host && !kept.includes(id));
+  return [...kept, ...rest].slice(0, n);
+}
+
+/**
+ * Who takes over when the host is gone: the first backup still present that
+ * can host (it already has the zone's state), otherwise the best candidate.
+ */
+export function successor(cands: Candidate[], backups: string[]): string | null {
+  for (const id of backups) {
+    const c = cands.find((c) => c.id === id);
+    if (c?.m && canHost(c.m)) return id;
+  }
+  return bestHost(cands);
 }
 
 /**
@@ -119,9 +162,10 @@ export function reviewHost(
   cands: Candidate[],
   challenge: Challenge | null,
   now: number,
+  backups: string[] = [],
 ): { host: string | null; challenge: Challenge | null } {
   const current = cands.find((c) => c.id === host);
-  if (!current) return { host: bestHost(cands), challenge: null };
+  if (!current) return { host: successor(cands, backups), challenge: null };
   if (!current.m) return { host, challenge: null }; // Its first status hasn't arrived yet.
 
   const n = cands.length;

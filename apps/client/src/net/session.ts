@@ -18,6 +18,19 @@ const LATE_TICK_MS = 1.5 * (1000 / TICK_HZ);
 const LATE_WINDOW = 100;
 /** Round-trip time assumed before any measurement arrives. */
 const DEFAULT_RTT_MS = 100;
+/** Host ticks between state updates to the backups (5 per second). */
+const STATE_EVERY_TICKS = 4;
+/** A client reports its host to the directory after this long without a snapshot. */
+const HOST_SILENCE_MS = 1000;
+/** A successor only uses backup state younger than this. */
+const STATE_MAX_AGE_MS = 5000;
+
+/** Zone state streamed from the host to its backups. */
+interface BackupState {
+  tick: number;
+  players: Map<string, { x: number; y: number }>;
+  t: number;
+}
 
 export type Role = 'offline' | 'connecting' | 'host' | 'client';
 
@@ -73,6 +86,18 @@ export interface HostDebug {
   open: boolean;
   snapTick: number;
   snapAgeMs: number | null;
+  /** This peer's place in the host's succession (1 = first), or null if it isn't a backup. */
+  backupRank: number | null;
+  stateTick: number | null;
+  stateAgeMs: number | null;
+}
+
+/** One of a host's backups, for the debug panel. */
+export interface BackupDebug {
+  id: string;
+  name: string | null;
+  /** The backup is connected, so state is reaching it. */
+  streaming: boolean;
 }
 
 export interface SessionOptions {
@@ -97,6 +122,8 @@ export class Session {
   hostId: string | null = null;
   /** The zone this session is joined to. Changes via setZone(). */
   zone: ZoneId;
+  /** The zone's backups as the directory last announced them, best first. */
+  backups: string[] = [];
   readonly remotes = new Map<string, Remote>();
 
   private signal: SignalClient;
@@ -105,12 +132,17 @@ export class Session {
   private seq = 0;
   private snapTick = 0;
   private snapT = 0;
+  private lastDownReport = 0;
+  /** Latest zone state from the host, when this peer is one of its backups. */
+  private backupState: BackupState | null = null;
   // Host-side state
   private clients = new Map<string, HostedClient>();
   private borders: BorderLinks;
   /** Players from neighbouring zones, relayed by their hosts (ids into remotes). */
   private foreign = new Set<string>();
   private rosterDirty = false;
+  /** After taking over: where each player was in the old host's last state, to validate their reconnect. */
+  private seed: BackupState | null = null;
   private tick = 0;
   private lastTickT = 0;
   private late: boolean[] = [];
@@ -213,6 +245,9 @@ export class Session {
     this.foreign.clear();
     this.borders.close();
     this.snapT = 0;
+    this.backups = [];
+    this.backupState = null;
+    this.seed = null;
     hostPeer?.close();
     for (const c of clients) c.peer.close();
   }
@@ -223,6 +258,8 @@ export class Session {
     switch (m.t) {
       case 'host':
         if (m.zone !== this.zone) break; // Stale: about a zone we've left.
+        this.backups = Array.isArray(m.backups) ? m.backups : [];
+        if (!this.backups.includes(this.o.peerId) && m.hostId !== this.o.peerId) this.backupState = null;
         if (m.hostId === this.o.peerId) this.becomeHost();
         else this.becomeClient(m.hostId);
         break;
@@ -244,6 +281,9 @@ export class Session {
       }
       case 'left':
         this.clients.get(m.peerId)?.peer.close();
+        break;
+      case 'probe':
+        this.signal.send({ t: 'alive', n: m.n });
         break;
       case 'pong': {
         const t = this.pings.get(m.n);
@@ -277,6 +317,11 @@ export class Session {
     this.late = [];
     this.lastTickT = 0;
     this.o.profile.setHosting(true);
+    // A backup taking over carries on from the old host's state.
+    const st = this.backupState;
+    this.backupState = null;
+    this.seed = st && performance.now() - st.t < STATE_MAX_AGE_MS ? st : null;
+    if (this.seed) this.tick = this.seed.tick;
   }
 
   private acceptClient(id: string) {
@@ -303,6 +348,18 @@ export class Session {
       c.x = Number(m.x) || 0;
       c.y = Number(m.y) || 0;
       c.lastT = performance.now();
+      // Reconnecting after a takeover: hold the claimed position to what the old host last validated.
+      const known = this.seed?.players.get(id);
+      if (known && this.seed) {
+        const maxD = PLAYER_SPEED * ((c.lastT - this.seed.t) / 1000 + 0.25) * 1.5;
+        const dx = c.x - known.x, dy = c.y - known.y, d = Math.hypot(dx, dy);
+        if (d > maxD) {
+          c.x = known.x + (dx * maxD) / d;
+          c.y = known.y + (dy * maxD) / d;
+          c.corrections++;
+        }
+        this.seed.players.delete(id);
+      }
       this.foreign.delete(id); // Now hosted here; no longer relayed by a neighbour.
       this.remotes.set(id, { info: c.info, samples: [{ t: c.lastT, x: c.x, y: c.y }] });
       this.broadcastRoster();
@@ -431,6 +488,13 @@ export class Session {
       },
       onUnreliable: (m) => {
         if (m.t === 'ping') return peer.sendU({ t: 'pong', ts: m.ts });
+        if (m.t === 'state') {
+          if (!this.backups.includes(this.o.peerId) || !Array.isArray(m.p)) return;
+          const players = new Map<string, { x: number; y: number }>();
+          for (const [pid, x, y] of m.p) if (Number.isFinite(x) && Number.isFinite(y)) players.set(pid, { x, y });
+          this.backupState = { tick: Number(m.tick) || 0, players, t: performance.now() };
+          return;
+        }
         if (m.t !== 'snap') return;
         const now = performance.now();
         this.snapTick = m.tick;
@@ -470,8 +534,21 @@ export class Session {
       }
       const snap: Unreliable = { t: 'snap', tick: this.tick, p };
       for (const c of this.clients.values()) if (c.info) c.peer.sendU(snap);
+
+      if (this.tick % STATE_EVERY_TICKS === 0 && this.backups.length) {
+        const state: Unreliable = {
+          t: 'state', tick: this.tick, p: local.map((l) => [l.info.id, round(l.x), round(l.y)]),
+        };
+        for (const id of this.backups) this.clients.get(id)?.peer.sendU(state);
+      }
     } else if (this.role === 'client' && this.hostPeer) {
       this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: round(self.x), y: round(self.y) });
+      // The host has gone quiet: ask the directory to check on it.
+      const now = performance.now();
+      if (this.snapT && now - this.snapT > HOST_SILENCE_MS && now - this.lastDownReport > HOST_SILENCE_MS) {
+        this.lastDownReport = now;
+        this.signal.send({ t: 'hostDown', zone: this.zone });
+      }
     }
   }
 
@@ -485,13 +562,32 @@ export class Session {
   hostDebug(): HostDebug | null {
     if (this.role === 'host' || !this.hostId) return null;
     const now = performance.now();
+    const rank = this.backups.indexOf(this.o.peerId);
+    const st = this.backupState;
     return {
       id: this.hostId,
       name: this.remotes.get(this.hostId)?.info.name ?? null,
       open: !!this.hostPeer?.isOpen,
       snapTick: this.snapTick,
       snapAgeMs: this.snapT ? now - this.snapT : null,
+      backupRank: rank >= 0 ? rank + 1 : null,
+      stateTick: st ? st.tick : null,
+      stateAgeMs: st ? now - st.t : null,
     };
+  }
+
+  /** The members this host streams its state to, best first. */
+  backupsDebug(): BackupDebug[] {
+    if (this.role !== 'host') return [];
+    return this.backups.map((id) => {
+      const c = this.clients.get(id);
+      return { id, name: c?.info?.name ?? null, streaming: !!(c?.info && c.peer.isOpen) };
+    });
+  }
+
+  /** The host simulation tick (continues across a takeover by a backup). */
+  get currentTick(): number {
+    return this.role === 'host' ? this.tick : this.snapTick;
   }
 
   /** Links to neighbouring zones' hosts, when this peer is a host. */

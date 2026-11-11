@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  HOST_SWITCH_HOLD_MS, bestHost, canHost, clientCap, hostScore, reviewHost, sanitizeMetrics,
+  HOST_SWITCH_HOLD_MS, bestHost, canHost, clientCap, hostScore, pickBackups, rankCandidates, reviewHost,
+  sanitizeMetrics, successor,
   type Candidate, type HostMetrics,
 } from './index.ts';
 
@@ -83,6 +84,48 @@ describe('host election', () => {
     expect(r.host).toBe('h');
     r = reviewHost('h', c, r.challenge, 1000 + HOST_SWITCH_HOLD_MS);
     expect(r).toEqual({ host: 's', challenge: null });
+  });
+
+  it('ranks eligible peers first, then ineligible, then those without status', () => {
+    const c: Candidate[] = [
+      { id: 'new', m: null },
+      { id: 'phone', m: desktop({ mobile: true, rttMs: 1 }) },
+      { id: 'slow', m: desktop({ rttMs: 200 }) },
+      { id: 'fast', m: desktop({ rttMs: 5 }) },
+    ];
+    expect(rankCandidates(c)).toEqual(['fast', 'slow', 'phone', 'new']);
+    expect(pickBackups(c, 'fast')).toEqual(['slow', 'phone']);
+    expect(pickBackups(c, 'slow', [], 3)).toEqual(['fast', 'phone', 'new']);
+  });
+
+  it('keeps backups in place while they can host, replacing only those that leave or cannot', () => {
+    const c: Candidate[] = [
+      { id: 'h', m: desktop() },
+      { id: 'x', m: desktop({ rttMs: 30 }) },
+      { id: 'y', m: desktop({ rttMs: 20 }) },
+      { id: 'z', m: desktop({ rttMs: 10 }) },
+    ];
+    // Ranked fresh, z and y would be picked; the existing backups x and y stay, in order.
+    expect(pickBackups(c, 'h', ['x', 'y'])).toEqual(['x', 'y']);
+    // x leaves: y stays first, the best remaining fills the gap.
+    expect(pickBackups(c.filter((m) => m.id !== 'x'), 'h', ['x', 'y'])).toEqual(['y', 'z']);
+    // y can no longer host (backgrounded): it is replaced.
+    const yHidden = c.map((m) => (m.id === 'y' ? { ...m, m: desktop({ visible: false }) } : m));
+    expect(pickBackups(yHidden, 'h', ['x', 'y'])).toEqual(['x', 'z']);
+    // A backup that becomes host leaves the list.
+    expect(pickBackups(c, 'x', ['x', 'y'])).toEqual(['y', 'z']);
+  });
+
+  it('hands a vanished host to its first eligible backup, even over a better-scoring peer', () => {
+    const c: Candidate[] = [
+      { id: 'best', m: desktop({ rttMs: 1 }) },
+      { id: 'b1', m: desktop({ mobile: true }) }, // A backup that can't host is skipped.
+      { id: 'b2', m: desktop({ rttMs: 50 }) },
+    ];
+    expect(successor(c, ['b1', 'b2'])).toBe('b2');
+    expect(reviewHost('gone', c, null, 0, ['b1', 'b2']).host).toBe('b2');
+    expect(successor(c, ['left-already'])).toBe('best');
+    expect(successor(c, [])).toBe('best');
   });
 
   it('resets the challenge when the challenger drops back', () => {

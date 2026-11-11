@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
-  reviewHost, sanitizeMetrics, type Candidate, type Challenge, type HostMetrics,
+  pickBackups, reviewHost, sanitizeMetrics, type Candidate, type Challenge, type HostMetrics,
 } from '../../../packages/shared/src/election.ts';
 import {
   PROTOCOL_VERSION, type FromSignal, type NeighbourHost, type ToSignal,
@@ -19,6 +19,8 @@ const MAX_MSG = 16 * 1024;
 const MAX_MSGS_PER_SEC = 50;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ZONE_RE = /^-?\d{1,9},-?\d{1,9}$/;
+/** A host reported silent gets this long to answer a probe before it's dropped. */
+const PROBE_MS = 750;
 
 interface Client {
   ws: WebSocket;
@@ -27,6 +29,8 @@ interface Client {
   zoneKey?: string;
   /** Latest status heartbeat, or null before the first one. */
   metrics: HostMetrics | null;
+  /** An unanswered liveness probe, after a member reported this host silent. */
+  probe?: { n: number; timer: ReturnType<typeof setTimeout> };
   alive: boolean;
   budget: number;
 }
@@ -35,6 +39,8 @@ interface Zone {
   /** Peer ids in join order. */
   members: string[];
   host: string | null;
+  /** Members the host streams its state to, best first; the first eligible one succeeds it. */
+  backups: string[];
   /** A peer that has been scoring well above the host, and since when. */
   challenge: Challenge | null;
 }
@@ -43,6 +49,7 @@ const clients = new Set<Client>();
 const peers = new Map<string, Client>();
 /** `${world}|${zone}` -> zone state. */
 const zones = new Map<string, Zone>();
+let probeN = 0;
 
 const send = (c: Client | undefined, m: FromSignal) => {
   if (c && c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(m));
@@ -72,18 +79,44 @@ function hostChanged(key: string) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) sendNeighbours(world, zx + dx, zy + dy);
 }
 
-/** Re-run the election for a zone; announce a new host to every member and to neighbouring hosts. */
+/**
+ * Re-run the election for a zone. A new host or new backups are announced to
+ * every member; a new host also to neighbouring hosts.
+ */
 function review(key: string) {
   const z = zones.get(key);
   if (!z) return;
   const cands: Candidate[] = z.members.map((id) => ({ id, m: peers.get(id)?.metrics ?? null }));
-  const r = reviewHost(z.host, cands, z.challenge, Date.now());
+  const r = reviewHost(z.host, cands, z.challenge, Date.now(), z.backups);
   z.challenge = r.challenge;
-  if (r.host === z.host) return;
+  const backups = pickBackups(cands, r.host, z.backups);
+  const hostMoved = r.host !== z.host;
+  if (!hostMoved && backups.join() === z.backups.join()) return;
   z.host = r.host;
+  z.backups = backups;
   const zone = zoneOfKey(key);
-  if (z.host) for (const id of z.members) send(peers.get(id), { t: 'host', zone, hostId: z.host });
-  hostChanged(key);
+  if (z.host) for (const id of z.members) send(peers.get(id), { t: 'host', zone, hostId: z.host, backups });
+  if (hostMoved) hostChanged(key);
+}
+
+/** A member says its host went silent: probe the host from page script, and drop it if no answer comes. */
+function suspectHost(c: Client, zone: string) {
+  if (!c.zoneKey || zoneOfKey(c.zoneKey) !== zone) return;
+  const z = zones.get(c.zoneKey);
+  if (!z?.host || z.host === c.peerId) return;
+  const host = peers.get(z.host);
+  if (!host || host.probe) return;
+  const n = ++probeN;
+  host.probe = {
+    n,
+    timer: setTimeout(() => {
+      if (host.probe?.n !== n) return;
+      host.probe = undefined;
+      console.log(`host ${host.peerId} of ${host.zoneKey} did not answer a probe; dropping it`);
+      host.ws.terminate(); // The close handler leaves the zone, and the election picks a successor.
+    }, PROBE_MS),
+  };
+  send(host, { t: 'probe', n });
 }
 
 function leaveZone(c: Client) {
@@ -120,9 +153,9 @@ function onMessage(c: Client, msg: ToSignal) {
     c.world = msg.world;
     c.zoneKey = `${msg.world}|${msg.zone}`;
     let z = zones.get(c.zoneKey);
-    if (!z) zones.set(c.zoneKey, (z = { members: [], host: null, challenge: null }));
+    if (!z) zones.set(c.zoneKey, (z = { members: [], host: null, backups: [], challenge: null }));
     z.members.push(c.peerId);
-    if (z.host) send(c, { t: 'host', zone: msg.zone, hostId: z.host });
+    if (z.host) send(c, { t: 'host', zone: msg.zone, hostId: z.host, backups: z.backups });
     else review(c.zoneKey); // Empty zone: the joiner hosts it.
     return;
   }
@@ -133,6 +166,17 @@ function onMessage(c: Client, msg: ToSignal) {
   }
   if (msg.t === 'ping') {
     send(c, { t: 'pong', n: Number(msg.n) || 0 });
+    return;
+  }
+  if (msg.t === 'alive') {
+    if (c.probe && c.probe.n === msg.n) {
+      clearTimeout(c.probe.timer);
+      c.probe = undefined;
+    }
+    return;
+  }
+  if (msg.t === 'hostDown') {
+    if (typeof msg.zone === 'string') suspectHost(c, msg.zone);
     return;
   }
   if (msg.t === 'signal') {
@@ -170,6 +214,7 @@ wss.on('connection', (ws) => {
     if (msg && typeof msg === 'object') onMessage(c, msg);
   });
   ws.on('close', () => {
+    if (c.probe) clearTimeout(c.probe.timer);
     clients.delete(c);
     leaveZone(c);
     if (c.peerId && peers.get(c.peerId) === c) peers.delete(c.peerId);

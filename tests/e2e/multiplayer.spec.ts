@@ -6,6 +6,11 @@ interface Probe {
   /** Clients this peer hosts, and open links to neighbouring zones' hosts. */
   clients: number;
   borders: number;
+  /** The zone's backups as last announced, and the host tick this peer has seen. */
+  backups: string[];
+  tick: number;
+  backupRank: number | null;
+  stateTick: number | null;
   self: { x: number; y: number };
   remotes: Array<{ id: string; name: string; x: number; y: number } | null>;
 }
@@ -19,6 +24,10 @@ async function probe(page: Page): Promise<Probe> {
       zone: ti.session.zone,
       clients: ti.session.clientsDebug().length,
       borders: ti.session.bordersDebug().filter((b: any) => b.open).length,
+      backups: [...ti.session.backups],
+      tick: ti.session.currentTick,
+      backupRank: ti.session.hostDebug()?.backupRank ?? null,
+      stateTick: ti.session.hostDebug()?.stateTick ?? null,
       self: { x: ti.self.x, y: ti.self.y },
       remotes: [...ti.session.remotes.values()].map((r: any) => {
         const p = ti.session.sample(r, now);
@@ -125,6 +134,44 @@ test('a host that opts out hands over to an eligible player', async ({ browser }
   await expect.poll(async () => (await probe(a)).role, { timeout: 10_000 }).toBe('host');
   await expect.poll(async () => (await probe(b)).role, { timeout: 10_000 }).toBe('client');
   expect(Date.now() - t0).toBeLessThan(5000);
+});
+
+test('a hung host is detected and its first backup takes over with its state', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  const c = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
+
+  // Both clients become backups, and state reaches them.
+  await expect.poll(async () => (await probe(a)).backups.length, { timeout: 10_000 }).toBe(2);
+  await expect.poll(async () => (await probe(b)).stateTick ?? 0, { timeout: 10_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await probe(c)).stateTick ?? 0, { timeout: 10_000 }).toBeGreaterThan(0);
+  const [first] = (await probe(a)).backups;
+  const [bId, cId] = [await peerIdOf(b), await peerIdOf(c)];
+  const [heir, other] = first === bId ? [b, c] : [c, b];
+  expect([bId, cId]).toContain(first);
+  const tickBefore = (await probe(a)).tick;
+
+  // Freeze A's page script. Its socket stays open, so only the silence watchdog
+  // and the directory's probe can tell that it's gone.
+  const t0 = Date.now();
+  void a.evaluate(() => {
+    for (;;) { /* hang */ }
+  }).catch(() => {});
+
+  await expect.poll(async () => (await probe(heir)).role, { timeout: 10_000 }).toBe('host');
+  const tookMs = Date.now() - t0;
+  await expect.poll(async () => (await probe(other)).role, { timeout: 10_000 }).toBe('client');
+  await expect.poll(async () => (await probe(other)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await probe(heir)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
+  expect((await probe(heir)).tick).toBeGreaterThanOrEqual(tickBefore); // The tick carried on from A's state.
+  console.log(`hung host replaced in ${tookMs}ms`);
+  expect(tookMs).toBeLessThan(4000);
+
+  await a.context().close().catch(() => {});
 });
 
 test('a host whose tab goes to the background hands off at once', async ({ browser }) => {

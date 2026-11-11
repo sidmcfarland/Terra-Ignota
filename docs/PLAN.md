@@ -43,7 +43,7 @@ infra/            docker-compose: signal + coturn + seed
 | M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
-| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff, neighbouring-host links and score-based election done (e2e-tested). Next: backup peers and snapshot streaming |
+| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
@@ -74,7 +74,8 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 
 ## Current limitations (what M2 left for later)
 - **Seeing across borders is per zone, not per player (M6).** Neighbouring hosts link up (`net/border.ts`) and share players within `BORDER_VIEW` (3 chunks) of each other's zone. Range is measured to the other zone, so everyone in a zone sees a player standing near it, however far away they are. Per-viewer interest management comes in M6.
-- **No backup peers yet (M3).** Election follows the M3 design (`election.ts` in shared, run by the signal server from status heartbeats every 2s). When a host leaves, backgrounds or opts out, the best eligible member takes over within about 1–2s (e2e-tested), but it starts from scratch: no snapshot is handed over, and clients reconnect.
+- **Failover still reconnects clients (M3 follow-up).** The host streams its state (tick and validated positions) to two backups at 5 Hz, and the first eligible backup succeeds it. A hung host is found when a client sees 1s without snapshots and the directory's probe gets no reply within 750ms (e2e-tested at about 1.9s). After a takeover, clients still open a new WebRTC link to the successor. Pre-connecting clients to the first backup would cut that out.
+- **Backups don't change once chosen.** A backup keeps its place while it's present and eligible, so a newcomer with a better score doesn't replace it. This stops near-equal scores from reshuffling the order on every heartbeat.
 - **Election approximations.** A host's ping is its average round trip to its clients, while everyone else's is to the signal server, so the numbers aren't strictly comparable. If nobody in a zone can host (all opted out, mobile or backgrounded), the best of them hosts anyway until the M4 seed peer exists. The track record is self-reported and kept per device in localStorage.
 - **No identity keys yet (M4).** `peerId` is a random id per tab, used only for connections. Name and colour are kept in localStorage. The Ed25519 identity and signed ops come in M4.
 - **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.
@@ -96,6 +97,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | One host per zone, with a 20% / 30s threshold before switching | Keeps one authority per zone and stops hosts flip-flopping. |
 | Lenient movement checks with a silent snap-back | Co-op makes cheating low-stakes, and strict per-tick checks would rubber-band honest players on bad connections. |
 | 1-chunk margin at zone borders | Stops a player standing on the line from being handed between hosts over and over. |
+| The directory confirms a silent host with a probe answered from page script | One client's report could be wrong (its own link may be the problem), and a hung page still answers WebSocket pings from the browser's network layer. |
 | Hosts of neighbouring zones (incl. diagonals) share one direct link, listed by the signal server | Players see across borders while clients still connect only to their own host. The server already knows every zone's host, so it sends each host its neighbours. The lower peer id dials, so each pair has one link. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 

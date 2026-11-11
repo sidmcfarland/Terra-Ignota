@@ -116,10 +116,18 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
     lines.push(
       `HOST   ${host.name ?? '?'}  id ${short(host.id)}  ·  link ${host.open ? 'open' : 'closed'}`,
       `       snapshot #${host.snapTick}, ${ms(host.snapAgeMs)} ago`,
+      host.backupRank === null
+        ? 'BACKUP no'
+        : `BACKUP #${host.backupRank} in line  ·  state #${host.stateTick ?? '—'}, ${ms(host.stateAgeMs)} ago`,
     );
   }
 
   if (session.role === 'host') {
+    const backups = session.backupsDebug();
+    lines.push(
+      `TICK   #${session.currentTick}`,
+      `BACKUPS ${backups.length ? backups.map((b, i) => `#${i + 1} ${b.name ?? short(b.id)}${b.streaming ? '' : ' (not connected)'}`).join('  ·  ') : 'none (alone in the zone)'}`,
+    );
     const clients = session.clientsDebug();
     lines.push(`CLIENTS ${clients.length}  (what each reports to you)`);
     if (clients.length) {
