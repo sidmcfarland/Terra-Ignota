@@ -20,9 +20,17 @@ export function worldSeed(worldId: string): number {
   return hashString(`terra-ignota:${worldId}`);
 }
 
+/** Raw elevation, roughly [-1, 1]. Continuous, so it can be sampled between tiles. */
+export function elevationAt(seed: number, x: number, y: number): number {
+  return fbm(seed, x / 96, y / 96, 5) + 0.15 * fbm(seed + 7, x / 24, y / 24, 2);
+}
+
+/** Elevation at which shallow water meets sand. */
+export const SEA_LEVEL = -0.12;
+
 /** Terrain at a world tile. Pure function of (seed, x, y). */
 export function tileAt(seed: number, x: number, y: number): Tile {
-  const elev = fbm(seed, x / 96, y / 96, 5) + 0.15 * fbm(seed + 7, x / 24, y / 24, 2);
+  const elev = elevationAt(seed, x, y);
   const moist = fbm(seed + 31337, x / 128, y / 128, 4);
 
   if (elev < -0.28) return Tile.DeepWater;

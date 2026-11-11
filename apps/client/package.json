@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@terra/shared": "*",
-    "pixi.js": "^8.6.0"
+    "pixi.js": "^8.6.0",
+    "three": "^0.170.0"
   },
   "devDependencies": {
+    "@types/three": "^0.170.0",
     "vite": "^7.2.0",
     "vite-plugin-pwa": "^1.2.0"
   }

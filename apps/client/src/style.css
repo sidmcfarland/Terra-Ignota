@@ -16,6 +16,11 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #status { color: var(--muted); white-space: pre; font-variant-numeric: tabular-nums; }
 #invite { margin-top: 8px; font: inherit; color: var(--bg); background: var(--accent); border: 0;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+#view { margin-top: 8px; margin-left: 4px; font: inherit; color: var(--text); background: transparent;
+  border: 1px solid var(--muted); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+.labels3d { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+.labels3d div { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px; color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000; }
 #stick { position: fixed; width: 96px; height: 96px; margin: -48px 0 0 -48px; border-radius: 50%;
   border: 2px solid rgba(232, 238, 242, 0.35); display: none; pointer-events: none; }
 #knob { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
