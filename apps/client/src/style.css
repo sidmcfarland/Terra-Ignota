@@ -17,7 +17,8 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #hud .buttons { display: flex; gap: 6px; margin-top: 8px; }
 #hud button { font: inherit; color: var(--bg); background: var(--accent); border: 0;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-#hud #debugBtn { color: var(--text); background: rgba(232, 238, 242, 0.14); }
+#hud #debugBtn, #hud #hostBtn { color: var(--text); background: rgba(232, 238, 242, 0.14); }
+#hud #hostBtn[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
 #debug { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
   margin: 0; background: var(--panel); border-radius: 8px; padding: 10px 12px; max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px); overflow: auto; backdrop-filter: blur(4px); color: var(--text);

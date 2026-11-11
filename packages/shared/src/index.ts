@@ -5,4 +5,5 @@ export * from './worldgen.ts';
 export * from './zones.ts';
 export * from './movement.ts';
 export * from './protocol.ts';
+export * from './election.ts';
 export * from './tilecache.ts';

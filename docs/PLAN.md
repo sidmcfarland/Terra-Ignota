@@ -43,7 +43,7 @@ infra/            docker-compose: signal + coturn + seed
 | M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
-| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff and neighbouring-host links done (e2e-tested). Next: score-based election |
+| M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | In progress: zone handoff, neighbouring-host links and score-based election done (e2e-tested). Next: backup peers and snapshot streaming |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
@@ -74,7 +74,8 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 
 ## Current limitations (what M2 left for later)
 - **Seeing across borders is per zone, not per player (M6).** Neighbouring hosts link up (`net/border.ts`) and share players within `BORDER_VIEW` (3 chunks) of each other's zone. Range is measured to the other zone, so everyone in a zone sees a player standing near it, however far away they are. Per-viewer interest management comes in M6.
-- **Host election is a placeholder (M3).** The signaling server picks the earliest member of a zone as host. Score-based election, backup peers and handing off when a tab is backgrounded aren't built yet. When the host leaves, the next member takes over in about 1.2s, and that is e2e-tested.
+- **No backup peers yet (M3).** Election follows the M3 design (`election.ts` in shared, run by the signal server from status heartbeats every 2s). When a host leaves, backgrounds or opts out, the best eligible member takes over within about 1–2s (e2e-tested), but it starts from scratch: no snapshot is handed over, and clients reconnect.
+- **Election approximations.** A host's ping is its average round trip to its clients, while everyone else's is to the signal server, so the numbers aren't strictly comparable. If nobody in a zone can host (all opted out, mobile or backgrounded), the best of them hosts anyway until the M4 seed peer exists. The track record is self-reported and kept per device in localStorage.
 - **No identity keys yet (M4).** `peerId` is a random id per tab, used only for connections. Name and colour are kept in localStorage. The Ed25519 identity and signed ops come in M4.
 - **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.
 - **The deployed site is solo-only until M7.** Multiplayer on Pages needs the `SIGNAL_URL` repository variable, or `#signal=wss://…` in the link.

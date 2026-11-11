@@ -2,6 +2,7 @@ import './style.css';
 import { TileCache, findSpawn, isWalkable, nextZone, step, worldSeed, zoneName, zoneOf, type PlayerInfo } from '@terra/shared';
 import { inviteSpot, inviteUrl, loadConfig } from './config.ts';
 import { DebugPanel } from './debug.ts';
+import { HostingProfile } from './net/hosting.ts';
 import { Input } from './input.ts';
 import { Session } from './net/session.ts';
 import { GameView, type Player } from './render/view.ts';
@@ -46,6 +47,18 @@ async function main() {
 
   // The session follows the player across zone borders (see nextZone).
   let zone = zoneOf(self.x, self.y);
+  const profile = new HostingProfile(cfg.peerId);
+  const hostBtn = document.getElementById('hostBtn') as HTMLButtonElement;
+  const showHosting = () => {
+    hostBtn.textContent = profile.optIn ? 'Hosting on' : 'Hosting off';
+    hostBtn.setAttribute('aria-pressed', String(profile.optIn));
+  };
+  hostBtn.onclick = () => {
+    profile.setOptIn(!profile.optIn);
+    showHosting();
+  };
+  showHosting();
+
   const session = cfg.signalUrl
     ? new Session({
         signalUrl: cfg.signalUrl,
@@ -53,6 +66,7 @@ async function main() {
         zone,
         peerId: cfg.peerId,
         info,
+        profile,
         iceServers: cfg.iceServers,
         tiles: tiles.get,
         getSelf: () => self,

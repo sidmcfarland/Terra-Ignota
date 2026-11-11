@@ -1,14 +1,19 @@
 /**
  * Signaling + zone directory server.
  *
- * Introduces peers and relays WebRTC offers/answers/ICE. Tracks which peer
- * hosts each zone (soft state). Never sees gameplay traffic.
+ * Introduces peers and relays WebRTC offers/answers/ICE. Elects and tracks
+ * which peer hosts each zone from their status heartbeats (soft state). Never
+ * sees gameplay traffic.
  */
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
+  reviewHost, sanitizeMetrics, type Candidate, type Challenge, type HostMetrics,
+} from '../../../packages/shared/src/election.ts';
+import {
   PROTOCOL_VERSION, type FromSignal, type NeighbourHost, type ToSignal,
 } from '../../../packages/shared/src/protocol.ts';
+
 const PORT = Number(process.env.PORT ?? 8787);
 const MAX_MSG = 16 * 1024;
 const MAX_MSGS_PER_SEC = 50;
@@ -20,32 +25,43 @@ interface Client {
   peerId?: string;
   world?: string;
   zoneKey?: string;
+  /** Latest status heartbeat, or null before the first one. */
+  metrics: HostMetrics | null;
   alive: boolean;
   budget: number;
 }
 
+interface Zone {
+  /** Peer ids in join order. */
+  members: string[];
+  host: string | null;
+  /** A peer that has been scoring well above the host, and since when. */
+  challenge: Challenge | null;
+}
+
 const clients = new Set<Client>();
 const peers = new Map<string, Client>();
-/** `${world}|${zone}` -> members in join order; members[0] is host. */
-const zones = new Map<string, string[]>();
+/** `${world}|${zone}` -> zone state. */
+const zones = new Map<string, Zone>();
 
 const send = (c: Client | undefined, m: FromSignal) => {
   if (c && c.ws.readyState === c.ws.OPEN) c.ws.send(JSON.stringify(m));
 };
 
 const zoneKey = (world: string, zx: number, zy: number) => `${world}|${zx},${zy}`;
+const zoneOfKey = (key: string) => key.slice(key.indexOf('|') + 1);
 
 /** Tell the host of zone (zx, zy), if it has one, who hosts each neighbouring zone. */
 function sendNeighbours(world: string, zx: number, zy: number) {
-  const members = zones.get(zoneKey(world, zx, zy));
-  if (!members?.length) return;
+  const z = zones.get(zoneKey(world, zx, zy));
+  if (!z?.host) return;
   const hosts: NeighbourHost[] = [];
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
     if (!dx && !dy) continue;
-    const m = zones.get(zoneKey(world, zx + dx, zy + dy));
-    if (m?.length) hosts.push({ zone: `${zx + dx},${zy + dy}`, hostId: m[0] });
+    const n = zones.get(zoneKey(world, zx + dx, zy + dy));
+    if (n?.host) hosts.push({ zone: `${zx + dx},${zy + dy}`, hostId: n.host });
   }
-  send(peers.get(members[0]), { t: 'neighbours', zone: `${zx},${zy}`, hosts });
+  send(peers.get(z.host), { t: 'neighbours', zone: `${zx},${zy}`, hosts });
 }
 
 /** A zone's host changed (or the zone appeared or emptied): refresh it and its neighbours. */
@@ -56,27 +72,36 @@ function hostChanged(key: string) {
   for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) sendNeighbours(world, zx + dx, zy + dy);
 }
 
+/** Re-run the election for a zone; announce a new host to every member and to neighbouring hosts. */
+function review(key: string) {
+  const z = zones.get(key);
+  if (!z) return;
+  const cands: Candidate[] = z.members.map((id) => ({ id, m: peers.get(id)?.metrics ?? null }));
+  const r = reviewHost(z.host, cands, z.challenge, Date.now());
+  z.challenge = r.challenge;
+  if (r.host === z.host) return;
+  z.host = r.host;
+  const zone = zoneOfKey(key);
+  if (z.host) for (const id of z.members) send(peers.get(id), { t: 'host', zone, hostId: z.host });
+  hostChanged(key);
+}
+
 function leaveZone(c: Client) {
   const key = c.zoneKey;
   if (!key || !c.peerId) return;
   c.zoneKey = undefined;
-  const members = zones.get(key);
-  if (!members) return;
-  const wasHost = members[0] === c.peerId;
-  const i = members.indexOf(c.peerId);
-  if (i >= 0) members.splice(i, 1);
-  if (members.length === 0) {
+  const z = zones.get(key);
+  if (!z) return;
+  const i = z.members.indexOf(c.peerId);
+  if (i >= 0) z.members.splice(i, 1);
+  if (z.members.length === 0) {
     zones.delete(key);
     hostChanged(key);
     return;
   }
-  const zone = key.slice(key.indexOf('|') + 1);
-  if (wasHost) {
-    for (const id of members) send(peers.get(id), { t: 'host', zone, hostId: members[0] });
-    hostChanged(key);
-  } else {
-    send(peers.get(members[0]), { t: 'left', peerId: c.peerId });
-  }
+  if (z.challenge?.id === c.peerId) z.challenge = null;
+  if (z.host === c.peerId) review(key);
+  else if (z.host) send(peers.get(z.host), { t: 'left', peerId: c.peerId });
 }
 
 function onMessage(c: Client, msg: ToSignal) {
@@ -94,11 +119,20 @@ function onMessage(c: Client, msg: ToSignal) {
     leaveZone(c);
     c.world = msg.world;
     c.zoneKey = `${msg.world}|${msg.zone}`;
-    let members = zones.get(c.zoneKey);
-    if (!members) zones.set(c.zoneKey, (members = []));
-    members.push(c.peerId);
-    send(c, { t: 'host', zone: msg.zone, hostId: members[0] });
-    if (members.length === 1) hostChanged(c.zoneKey);
+    let z = zones.get(c.zoneKey);
+    if (!z) zones.set(c.zoneKey, (z = { members: [], host: null, challenge: null }));
+    z.members.push(c.peerId);
+    if (z.host) send(c, { t: 'host', zone: msg.zone, hostId: z.host });
+    else review(c.zoneKey); // Empty zone: the joiner hosts it.
+    return;
+  }
+  if (msg.t === 'status') {
+    c.metrics = sanitizeMetrics(msg.m);
+    if (c.zoneKey) review(c.zoneKey);
+    return;
+  }
+  if (msg.t === 'ping') {
+    send(c, { t: 'pong', n: Number(msg.n) || 0 });
     return;
   }
   if (msg.t === 'signal') {
@@ -122,7 +156,7 @@ const http = createServer((req, res) => {
 const wss = new WebSocketServer({ server: http, maxPayload: MAX_MSG });
 
 wss.on('connection', (ws) => {
-  const c: Client = { ws, alive: true, budget: MAX_MSGS_PER_SEC };
+  const c: Client = { ws, metrics: null, alive: true, budget: MAX_MSGS_PER_SEC };
   clients.add(c);
   ws.on('pong', () => (c.alive = true));
   ws.on('message', (raw) => {

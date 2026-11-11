@@ -28,13 +28,13 @@ async function probe(page: Page): Promise<Probe> {
   });
 }
 
-async function join(browser: Browser, world: string): Promise<Page> {
+async function join(browser: Browser, world: string, extra = ''): Promise<Page> {
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.error('pageerror:', e.message));
   // render=0: these tests check networking state only, and software WebGL in
   // headless Chromium is slow enough to break handoff timings.
-  await page.goto(`/#w=${world}&render=0&debug=1`);
+  await page.goto(`/#w=${world}&render=0&debug=1${extra}`);
   await page.waitForFunction(() => (window as any).__ti?.session);
   return page;
 }
@@ -93,12 +93,56 @@ test('host leaving hands the zone to a remaining player', async ({ browser }) =>
   const t0 = Date.now();
   await a.context().close();
 
-  // B joined first, so it becomes host; C reconnects to it.
-  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
-  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
-  await expect.poll(async () => (await probe(c)).remotes.filter(Boolean).length, { timeout: 20_000 }).toBe(1);
+  // The better-scoring of B and C takes over at once; the other reconnects to it.
+  await expect.poll(async () => [(await probe(b)).role, (await probe(c)).role].sort().join(), { timeout: 20_000 })
+    .toBe('client,host');
+  const [host, client] = (await probe(b)).role === 'host' ? [b, c] : [c, b];
+  await expect.poll(async () => (await probe(client)).remotes.filter(Boolean).length, { timeout: 20_000 }).toBe(1);
   expect(Date.now() - t0).toBeLessThan(5000);
-  await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(1);
+  await expect.poll(async () => (await probe(host)).remotes.filter(Boolean).length).toBe(1);
+});
+
+test('a host that opts out hands over to an eligible player', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  // A peer that has opted out still hosts when it's alone, so play goes on...
+  const a = await join(browser, world, '&host=0');
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  // ...but hands over as soon as an eligible player is in the zone.
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 10_000 }).toBe('host');
+  await expect.poll(async () => (await probe(a)).role, { timeout: 10_000 }).toBe('client');
+  await expect(a.locator('#hostBtn')).toHaveText('Hosting off');
+
+  // B turns hosting off from the HUD; A is still opted out, so nobody better can take over.
+  await b.locator('#hostBtn').click();
+  await expect(b.locator('#hostBtn')).toHaveText('Hosting off');
+  await b.waitForTimeout(2500);
+  expect((await probe(b)).role).toBe('host');
+
+  // A opts back in: B, opted out, hands over at once.
+  const t0 = Date.now();
+  await a.locator('#hostBtn').click();
+  await expect.poll(async () => (await probe(a)).role, { timeout: 10_000 }).toBe('host');
+  await expect.poll(async () => (await probe(b)).role, { timeout: 10_000 }).toBe('client');
+  expect(Date.now() - t0).toBeLessThan(5000);
+});
+
+test('a host whose tab goes to the background hands off at once', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+
+  const t0 = Date.now();
+  await a.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(async () => (await probe(b)).role, { timeout: 10_000 }).toBe('host');
+  await expect.poll(async () => (await probe(a)).role, { timeout: 10_000 }).toBe('client');
+  expect(Date.now() - t0).toBeLessThan(3000);
+  await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
 });
 
 // Mirrors packages/shared/src/constants.ts (ZONE_TILES = 32 * 8, ZONE_MARGIN = 32).

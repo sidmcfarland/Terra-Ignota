@@ -1,8 +1,9 @@
 import {
-  PLAYER_SPEED, PROTOCOL_VERSION, TICK_HZ, isWalkable,
-  type FromSignal, type PlayerInfo, type Reliable, type TileLookup, type Unreliable, type ZoneId,
+  PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ, canHost, hostScore, isWalkable,
+  type FromSignal, type HostMetrics, type PlayerInfo, type Reliable, type TileLookup, type Unreliable, type ZoneId,
 } from '@terra/shared';
 import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
+import type { HostingProfile } from './hosting.ts';
 import { Peer } from './peer.ts';
 import { SignalClient } from './signal.ts';
 
@@ -11,6 +12,12 @@ const INTERP_DELAY_MS = 100;
 const BUFFER_MS = 1000;
 /** A neighbouring zone's player disappears after this long without a position. */
 const FOREIGN_TTL_MS = 1000;
+/** A host tick counts as late when it fires this much after the previous one. */
+const LATE_TICK_MS = 1.5 * (1000 / TICK_HZ);
+/** How many recent host ticks the late-tick fraction covers. */
+const LATE_WINDOW = 100;
+/** Round-trip time assumed before any measurement arrives. */
+const DEFAULT_RTT_MS = 100;
 
 export type Role = 'offline' | 'connecting' | 'host' | 'client';
 
@@ -32,6 +39,8 @@ interface HostedClient {
   /** Position reports accepted, and reports clamped or rejected by validation. */
   reports: number;
   corrections: number;
+  /** Smoothed round trip to this client, once measured. */
+  rttMs: number | null;
 }
 
 /** What a host knows about one of its clients, for the debug panel. */
@@ -45,6 +54,16 @@ export interface ClientDebug {
   reportAgeMs: number | null;
   reports: number;
   corrections: number;
+  rttMs: number | null;
+}
+
+/** This peer's standing in host election, for the debug panel. */
+export interface HostingDebug {
+  metrics: HostMetrics;
+  eligible: boolean;
+  /** Why it can't host right now, if it can't. */
+  reasons: string[];
+  score: number;
 }
 
 /** What a client knows about its host, for the debug panel. */
@@ -62,6 +81,7 @@ export interface SessionOptions {
   zone: ZoneId;
   peerId: string;
   info: PlayerInfo;
+  profile: HostingProfile;
   iceServers: RTCIceServer[];
   tiles: TileLookup;
   getSelf(): { x: number; y: number };
@@ -92,8 +112,15 @@ export class Session {
   private foreign = new Set<string>();
   private rosterDirty = false;
   private tick = 0;
+  private lastTickT = 0;
+  private late: boolean[] = [];
   private timer: ReturnType<typeof setInterval>;
+  private statusTimer: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
+  // Round trip to the signal server
+  private signalRtt: number | null = null;
+  private pings = new Map<number, number>();
+  private pingN = 0;
 
   private readonly o: SessionOptions;
 
@@ -116,6 +143,8 @@ export class Session {
       },
     );
     this.timer = setInterval(() => this.onTick(), 1000 / TICK_HZ);
+    this.statusTimer = setInterval(() => this.heartbeat(), STATUS_INTERVAL_MS);
+    o.profile.onChange = () => this.sendStatus();
   }
 
   get playerCount(): number {
@@ -137,7 +166,41 @@ export class Session {
   }
 
   private join() {
+    this.sendStatus(); // Before joining, so an empty zone's election can use it.
     this.signal.send({ t: 'join', v: PROTOCOL_VERSION, world: this.o.world, zone: this.zone, peerId: this.o.peerId });
+  }
+
+  // ---------------- election status ----------------
+
+  /** Fraction of recent host ticks that ran late. */
+  private get lateTicks(): number {
+    return this.late.length ? this.late.filter(Boolean).length / this.late.length : 0;
+  }
+
+  /** Average round trip to our clients while hosting; otherwise to the signal server. */
+  private get rttMs(): number {
+    if (this.role === 'host') {
+      const rtts = [...this.clients.values()].map((c) => c.rttMs).filter((v): v is number => v !== null);
+      if (rtts.length) return rtts.reduce((a, b) => a + b, 0) / rtts.length;
+    }
+    return this.signalRtt ?? DEFAULT_RTT_MS;
+  }
+
+  private metrics(): HostMetrics {
+    return this.o.profile.metrics(this.rttMs, this.lateTicks);
+  }
+
+  private sendStatus() {
+    this.signal.send({ t: 'status', m: this.metrics() });
+  }
+
+  private heartbeat() {
+    this.o.profile.setHosting(this.role === 'host');
+    const n = ++this.pingN;
+    this.pings.set(n, performance.now());
+    if (this.pings.size > 10) this.pings.delete(this.pings.keys().next().value!);
+    this.signal.send({ t: 'ping', n });
+    this.sendStatus();
   }
 
   private dropLinks() {
@@ -182,6 +245,13 @@ export class Session {
       case 'left':
         this.clients.get(m.peerId)?.peer.close();
         break;
+      case 'pong': {
+        const t = this.pings.get(m.n);
+        if (t === undefined) break;
+        this.pings.delete(m.n);
+        this.signalRtt = smooth(this.signalRtt, performance.now() - t);
+        break;
+      }
       case 'error':
         console.error('signal error:', m.message);
         break;
@@ -195,6 +265,7 @@ export class Session {
   // ---------------- host role ----------------
 
   private becomeHost() {
+    if (this.role === 'host') return;
     clearTimeout(this.retryTimer);
     const old = this.hostPeer;
     this.hostPeer = null;
@@ -203,6 +274,9 @@ export class Session {
     this.hostId = this.o.peerId;
     this.remotes.clear();
     this.foreign.clear();
+    this.late = [];
+    this.lastTickT = 0;
+    this.o.profile.setHosting(true);
   }
 
   private acceptClient(id: string) {
@@ -218,7 +292,7 @@ export class Session {
       onReliable: (m) => this.hostOnReliable(id, m),
       onUnreliable: (m) => this.hostOnUnreliable(id, m),
     });
-    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0 });
+    this.clients.set(id, { peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0, rttMs: null });
   }
 
   private hostOnReliable(id: string, m: Reliable) {
@@ -237,6 +311,11 @@ export class Session {
 
   private hostOnUnreliable(id: string, m: Unreliable) {
     const c = this.clients.get(id);
+    if (c && m.t === 'pong' && Number.isFinite(m.ts)) {
+      const rtt = performance.now() - m.ts;
+      if (rtt >= 0 && rtt < 10_000) c.rttMs = smooth(c.rttMs, rtt);
+      return;
+    }
     if (!c?.info || m.t !== 'pos' || !(m.seq > c.lastSeq)) return;
     if (!Number.isFinite(m.x) || !Number.isFinite(m.y)) return;
     const now = performance.now();
@@ -301,7 +380,9 @@ export class Session {
   // ---------------- client role ----------------
 
   private becomeClient(hostId: string) {
+    if (this.role === 'client' && this.hostId === hostId && this.hostPeer?.isOpen) return; // Already connected.
     if (this.role === 'host') {
+      this.o.profile.setHosting(false);
       for (const c of this.clients.values()) c.peer.close();
       this.clients.clear();
       this.foreign.clear();
@@ -349,6 +430,7 @@ export class Session {
         for (const id of this.remotes.keys()) if (!ids.has(id)) this.remotes.delete(id);
       },
       onUnreliable: (m) => {
+        if (m.t === 'ping') return peer.sendU({ t: 'pong', ts: m.ts });
         if (m.t !== 'snap') return;
         const now = performance.now();
         this.snapTick = m.tick;
@@ -366,6 +448,14 @@ export class Session {
     if (this.role === 'host') {
       this.tick++;
       const now = performance.now();
+      if (this.lastTickT) {
+        this.late.push(now - this.lastTickT > LATE_TICK_MS);
+        if (this.late.length > LATE_WINDOW) this.late.shift();
+      }
+      this.lastTickT = now;
+      if (this.tick % TICK_HZ === 0) {
+        for (const c of this.clients.values()) if (c.info) c.peer.sendU({ t: 'ping', ts: now });
+      }
       const local: LocalPlayer[] = [{ info: this.o.info, x: self.x, y: self.y }];
       for (const c of this.clients.values()) if (c.info) local.push({ info: c.info, x: c.x, y: c.y });
       this.borders.tick(local);
@@ -423,7 +513,20 @@ export class Session {
       reportAgeMs: c.info ? now - c.lastT : null,
       reports: c.reports,
       corrections: c.corrections,
+      rttMs: c.rttMs,
     }));
+  }
+
+  /** This peer's eligibility and score as the directory sees them. */
+  hostingDebug(): HostingDebug {
+    const m = this.metrics();
+    const reasons: string[] = [];
+    if (!m.optIn) reasons.push('opted out');
+    if (!m.visible) reasons.push('tab in background');
+    if (m.mobile) reasons.push('mobile');
+    if (m.battery) reasons.push('on battery');
+    const members = this.role === 'host' ? this.clients.size + 1 : 1;
+    return { metrics: m, eligible: canHost(m), reasons, score: hostScore(m, members) };
   }
 
   /** Interpolated position of a remote player for rendering, or null. */
@@ -445,6 +548,7 @@ export class Session {
 
   close() {
     clearInterval(this.timer);
+    clearInterval(this.statusTimer);
     clearTimeout(this.retryTimer);
     this.signal.close();
     this.hostPeer?.close();
@@ -460,3 +564,6 @@ function pushSample(r: Remote | undefined, t: number, x: number, y: number) {
 }
 
 const round = (v: number) => Math.round(v * 100) / 100;
+
+/** Exponentially smoothed round-trip time. */
+const smooth = (prev: number | null, sample: number) => (prev === null ? sample : prev * 0.8 + sample * 0.2);

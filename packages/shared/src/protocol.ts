@@ -1,6 +1,7 @@
+import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 
@@ -12,7 +13,11 @@ export type LinkKind = 'zone' | 'border';
 
 export type ToSignal =
   | { t: 'join'; v: number; world: string; zone: ZoneId; peerId: string }
-  | { t: 'signal'; to: string; link: LinkKind; data: SignalData };
+  | { t: 'signal'; to: string; link: LinkKind; data: SignalData }
+  /** Heartbeat with what the directory needs to elect hosts. Sent every STATUS_INTERVAL_MS and on changes. */
+  | { t: 'status'; m: HostMetrics }
+  /** Round-trip probe; answered with a pong carrying the same n. */
+  | { t: 'ping'; n: number };
 
 export interface NeighbourHost {
   zone: ZoneId;
@@ -27,6 +32,7 @@ export type FromSignal =
   | { t: 'signal'; from: string; link: LinkKind; data: SignalData }
   /** Sent to a zone host when a member's socket closes. */
   | { t: 'left'; peerId: string }
+  | { t: 'pong'; n: number }
   | { t: 'error'; message: string };
 
 export type SignalData =
@@ -53,6 +59,9 @@ export type Reliable =
 /** Unreliable channel. Positions packed as [id, x, y]. */
 export type Unreliable =
   | { t: 'pos'; seq: number; x: number; y: number }
+  /** Host to client round-trip probe, echoed back as pong. */
+  | { t: 'ping'; ts: number }
+  | { t: 'pong'; ts: number }
   | { t: 'snap'; tick: number; p: Array<[string, number, number]> }
   /** Host to neighbouring host: the sender's players near the receiver's zone. */
   | { t: 'edge'; p: Array<[string, number, number]> };

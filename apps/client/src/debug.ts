@@ -102,6 +102,15 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
   if (!session) return [...lines, 'NET    solo (no signaling server configured)'];
   lines.push(`ROLE   ${session.role}  ·  signal ${session.signalUp ? 'up' : 'down'}`);
 
+  const h = session.hostingDebug();
+  const m = h.metrics;
+  lines.push(
+    `ELECT  ${h.eligible ? 'can host' : `can't host: ${h.reasons.join(', ')}`}  ·  score ${h.score.toFixed(1)}`,
+    `       rtt ${Math.round(m.rttMs)}ms  ·  up ${Math.floor(m.uptimeMs / 60_000)}m  ·  ` +
+      `hosted ${(m.hostedMs / 3_600_000).toFixed(1)}h  ·  crashes ${m.uncleanExits}  ·  ` +
+      `late ${(m.lateTicks * 100).toFixed(0)}%  ·  cap ${m.cap}`,
+  );
+
   const host = session.hostDebug();
   if (host) {
     lines.push(
@@ -115,13 +124,14 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
     lines.push(`CLIENTS ${clients.length}  (what each reports to you)`);
     if (clients.length) {
       lines.push(`  ${'name'.padEnd(20)}${'id'.padEnd(10)}${'x'.padStart(8)}${'y'.padStart(8)}` +
-        `${'age'.padStart(8)}${'seq'.padStart(7)}${'fixes'.padStart(7)}`);
+        `${'age'.padStart(8)}${'seq'.padStart(7)}${'fixes'.padStart(7)}${'rtt'.padStart(7)}`);
     }
     for (const c of clients) {
       lines.push(
         `  ${(c.name ?? '(joining)').slice(0, 19).padEnd(20)}${short(c.id).padEnd(10)}` +
           `${c.x.toFixed(1).padStart(8)}${c.y.toFixed(1).padStart(8)}${ms(c.reportAgeMs).padStart(8)}` +
-          `${String(c.seq).padStart(7)}${String(c.corrections).padStart(7)}${c.open ? '' : '  link closed'}`,
+          `${String(c.seq).padStart(7)}${String(c.corrections).padStart(7)}${ms(c.rttMs).padStart(7)}` +
+          `${c.open ? '' : '  link closed'}`,
       );
     }
 
