@@ -12,6 +12,7 @@ import {
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
 import { Terrain, WATER_Y } from './terrain.ts';
+import { ZoneLines } from './zones.ts';
 
 export interface Player {
   info: PlayerInfo;
@@ -42,6 +43,7 @@ export class GameView {
   private camera = new OrthographicCamera(-1, 1, 1, -1, 1, CAM_DIST * 2);
   private sun = new DirectionalLight(0xfff1dc, 2.8);
   private terrain: Terrain;
+  private zoneLines: ZoneLines;
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -57,6 +59,8 @@ export class GameView {
 
     this.terrain = new Terrain(tiles);
     this.scene.add(this.terrain.group);
+    this.zoneLines = new ZoneLines(tiles.seed);
+    this.scene.add(this.zoneLines.group);
     this.scene.add(new HemisphereLight(0xcfe3ff, 0x3a2e22, 0.75));
     this.sun.position.set(-0.6, 1, 0.35).multiplyScalar(100);
     this.scene.add(this.sun, this.sun.target);
@@ -78,6 +82,11 @@ export class GameView {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     // Screen-up is the camera's ground-projected forward: (-sin, -cos) in world x/y.
     return { x: c * d.x + s * d.y, y: -s * d.x + c * d.y };
+  }
+
+  /** Draw zone borders and handoff margins on the ground (debug mode). */
+  set showZones(on: boolean) {
+    this.zoneLines.visible = on;
   }
 
   frame(self: { x: number; y: number }, players: Player[], zoom: number) {
@@ -112,7 +121,9 @@ export class GameView {
     this.sun.position.copy(target).add(new Vector3(-90, 55, -30));
 
     // Ground seen at this pitch stretches ~1/sin(pitch) vertically.
-    this.terrain.update(self.x, self.y, Math.hypot(w, h / Math.sin(PITCH)) / zoom / 2);
+    const radius = Math.hypot(w, h / Math.sin(PITCH)) / zoom / 2;
+    this.terrain.update(self.x, self.y, radius);
+    this.zoneLines.update(self.x, self.y, radius);
 
     const seen = new Set<string>();
     const v = new Vector3();

@@ -92,7 +92,10 @@ async function main() {
       }
     }
     players.push({ info, x: self.x, y: self.y, self: true });
-    if (draw) view.frame(self, players, zoom);
+    if (draw) {
+      view.showZones = debug.visible;
+      view.frame(self, players, zoom);
+    }
 
     if (now - hudT > 250) {
       hudT = now;
