@@ -83,6 +83,8 @@ async function main() {
         iceServers: cfg.iceServers,
         tiles: tiles.get,
         getSelf: () => self,
+        // How far the screen shows at this zoom (the radius GameView draws to); the host sends players within it.
+        getView: () => Math.hypot(innerWidth, innerHeight * Math.sqrt(3)) / zoom / 2,
       })
     : null;
 

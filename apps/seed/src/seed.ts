@@ -13,8 +13,8 @@ import { createServer } from 'node:http';
 import { RTCPeerConnection } from 'node-datachannel/polyfill';
 import { WebSocket } from 'ws';
 import {
-  PROTOCOL_VERSION, isWellFormed, verifyOp, zoneChunkKeys,
-  type FromSignal, type TileOp, type ToSignal, type ZoneHost,
+  BORDER_VIEW, PROTOCOL_VERSION, distToZone, isWellFormed, opWins, verifyOp, zoneChunkKeys,
+  type FromSignal, type ToSignal, type ZoneHost,
 } from '../../../packages/shared/src/index.ts';
 import { Peer } from '../../client/src/net/peer.ts';
 import { DiskStore } from './store.ts';
@@ -117,7 +117,7 @@ function dial(key: string, h: ZoneHost) {
       }, REDIAL_MS);
     },
     onReliable: (m) => {
-      if (m.t === 'edits') void receive(h.world, m.ops);
+      if (m.t === 'edits') void receive(h, m.ops);
       else if (m.t === 'syncWant') {
         const zone = new Set(zoneChunkKeys(h.zone));
         const edits = store.world(h.world);
@@ -142,13 +142,20 @@ function sync(peer: Peer, h: ZoneHost) {
   peer.sendR({ t: 'sync', d });
 }
 
-/** Verify ops from a host, merge them, and write the ones that changed to disk. */
-async function receive(world: string, ops: unknown) {
+/**
+ * Verify ops from a host, merge them, and write the ones that changed to disk.
+ * A host only ever holds edits in or near its own zone, so anything further
+ * away is refused: one host can't fill the seed's disk with edits everywhere.
+ */
+async function receive(h: ZoneHost, ops: unknown) {
   if (!Array.isArray(ops)) return;
-  const edits = store.world(world);
-  for (const op of ops.slice(0, 5000)) {
-    if (!isWellFormed(op) || !(await verifyOp(world, op as TileOp))) continue;
-    if (edits.merge(op)) store.append(world, op);
+  const edits = store.world(h.world);
+  for (const op of ops.slice(0, 1024)) {
+    if (!isWellFormed(op) || distToZone(op.x + 0.5, op.y + 0.5, h.zone) > BORDER_VIEW) continue;
+    const cur = edits.get(op.x, op.y);
+    if (cur && !opWins(op, cur)) continue; // Nothing new: skip the signature check.
+    if (!(await verifyOp(h.world, op))) continue;
+    if (edits.merge(op)) store.append(h.world, op);
   }
 }
 

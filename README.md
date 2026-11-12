@@ -24,6 +24,7 @@ URL hash parameters:
 npm run typecheck
 npm test               # unit tests (worldgen, movement, zones)
 npm run e2e            # real browsers connecting over WebRTC
+npm run bots -- --bots 100 --zones 4   # load test: headless bots against a running signal server (--help for options)
 ```
 
 ## Layout
@@ -33,6 +34,7 @@ packages/shared   worldgen, movement, protocol (runs in browser and Node)
 apps/client       PWA (Vite + Three.js)
 apps/signal       signaling + zone directory server
 apps/seed         always-on seed peer: keeps world edits on disk
+apps/bots         headless bot swarm for load tests
 ```
 
 ## Deploy

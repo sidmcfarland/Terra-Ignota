@@ -112,6 +112,7 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
   const lines = [`YOU    ${name}  id ${short(peerId)}`];
   if (!session) return [...lines, 'NET    solo (no signaling server configured)'];
   lines.push(`ROLE   ${session.role}  ·  signal ${session.signalUp ? 'up' : 'down'}`);
+  lines.push(`VIEW   ${Math.round(session.viewRadius)} tiles  ·  sees ${session.remotes.size}  ·  ${session.playerCount} in the zone`);
 
   const h = session.hostingDebug();
   const m = h.metrics;
@@ -136,7 +137,7 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
   if (session.role === 'host') {
     const backups = session.backupsDebug();
     lines.push(
-      `TICK   #${session.currentTick}  ·  seeds ${session.seedCount}`,
+      `TICK   #${session.currentTick}  ·  ${(session.stats.tickMs / Math.max(1, session.stats.ticks)).toFixed(2)}ms each  ·  seeds ${session.seedCount}`,
       `BACKUPS ${backups.length ? backups.map((b, i) => `#${i + 1} ${b.name ?? short(b.id)}${b.streaming ? '' : ' (not connected)'}`).join('  ·  ') : 'none (alone in the zone)'}`,
     );
     const clients = session.clientsDebug();

@@ -1,4 +1,5 @@
-import type { Reliable, SignalData, Unreliable } from '@terra/shared';
+import { decodeUnreliable, encodeUnreliable, type LinkGuard, type Reliable, type SignalData, type Unreliable } from '@terra/shared';
+import { count, netStats } from './stats.ts';
 
 export interface PeerHandlers {
   onOpen(): void;
@@ -9,7 +10,7 @@ export interface PeerHandlers {
 
 /**
  * One WebRTC connection with two data channels:
- * `r` (reliable, ordered) and `u` (unordered, no retransmits).
+ * `r` (reliable, ordered; JSON) and `u` (unordered, no retransmits; binary, see the shared codec).
  */
 export class Peer {
   private pc: RTCPeerConnection;
@@ -23,19 +24,29 @@ export class Peer {
   readonly remoteId: string;
   private readonly sendSignal: (d: SignalData) => void;
   private readonly h: PeerHandlers;
+  private readonly guard: LinkGuard | null;
 
+  /**
+   * @param guard Limits on what this peer may send us. Messages over them are
+   *   dropped unread, and a peer that keeps overrunning them is disconnected.
+   */
   constructor(
     remoteId: string,
     initiator: boolean,
     iceServers: RTCIceServer[],
     sendSignal: (d: SignalData) => void,
     h: PeerHandlers,
+    guard: LinkGuard | null = null,
   ) {
     this.remoteId = remoteId;
     this.sendSignal = sendSignal;
     this.h = h;
+    this.guard = guard;
     this.pc = new RTCPeerConnection({ iceServers });
-    this.pc.onicecandidate = (e) => this.sendSignal({ kind: 'ice', candidate: e.candidate?.toJSON() ?? null });
+    // (The end-of-candidates event isn't relayed: receivers ignore it, and it would be a third of a host's signalling.)
+    this.pc.onicecandidate = (e) => {
+      if (e.candidate) this.sendSignal({ kind: 'ice', candidate: e.candidate.toJSON() });
+    };
     this.pc.onconnectionstatechange = () => {
       const s = this.pc.connectionState;
       clearTimeout(this.discoTimer);
@@ -83,9 +94,11 @@ export class Peer {
   }
 
   private setup(ch: RTCDataChannel) {
-    if (ch.label === 'r') this.r = ch;
-    else if (ch.label === 'u') this.u = ch;
+    const label = ch.label;
+    if (label === 'r') this.r = ch;
+    else if (label === 'u') this.u = ch;
     else return ch.close();
+    ch.binaryType = 'arraybuffer';
     ch.onopen = () => {
       if (!this.opened && this.r?.readyState === 'open' && this.u?.readyState === 'open') {
         this.opened = true;
@@ -94,14 +107,27 @@ export class Peer {
     };
     ch.onclose = () => this.close();
     ch.onmessage = (e) => {
-      let m;
-      try {
-        m = JSON.parse(e.data);
-      } catch {
+      const data: unknown = e.data;
+      const size = typeof data === 'string' ? data.length : data instanceof ArrayBuffer ? data.byteLength : 0;
+      count(netStats.recv, label, size);
+      if (this.guard && !this.guard.allow(label, size, performance.now())) {
+        netStats.dropped++;
+        if (this.guard.tripped) this.close();
         return;
       }
-      if (ch.label === 'r') this.h.onReliable(m);
-      else this.h.onUnreliable(m);
+      if (label === 'r') {
+        if (typeof data !== 'string') return;
+        let m;
+        try {
+          m = JSON.parse(data);
+        } catch {
+          return;
+        }
+        if (m && typeof m === 'object') this.h.onReliable(m);
+      } else if (data instanceof ArrayBuffer) {
+        const m = decodeUnreliable(data);
+        if (m) this.h.onUnreliable(m);
+      }
     };
   }
 
@@ -109,18 +135,38 @@ export class Peer {
     return this.opened && !this.closed;
   }
 
+  /** Bytes queued on the reliable channel and not yet sent. */
+  get backlog(): number {
+    return this.r?.bufferedAmount ?? 0;
+  }
+
   sendR(m: Reliable) {
-    if (this.r?.readyState === 'open') this.r.send(JSON.stringify(m));
+    if (this.r?.readyState !== 'open') return;
+    const data = JSON.stringify(m);
+    try {
+      this.r.send(data);
+    } catch {
+      return; // The channel closed under us: the message is dropped, like any sent just before a close.
+    }
+    count(netStats.sent, `r:${m.t}`, data.length);
   }
 
   sendU(m: Unreliable) {
     // Drop rather than queue when congested; positions are superseded anyway.
-    if (this.u?.readyState === 'open' && this.u.bufferedAmount < 64 * 1024) this.u.send(JSON.stringify(m));
+    if (this.u?.readyState !== 'open' || this.u.bufferedAmount >= 64 * 1024) return;
+    const data = encodeUnreliable(m);
+    try {
+      this.u.send(data);
+    } catch {
+      return;
+    }
+    count(netStats.sent, `u:${m.t}`, data.length);
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (!this.opened) netStats.connectFails++;
     clearTimeout(this.discoTimer);
     this.pc.close();
     this.h.onClose();
