@@ -1,6 +1,7 @@
 import {
   Color,
   DataTexture,
+  DoubleSide,
   LinearFilter,
   LinearMipmapLinearFilter,
   RedFormat,
@@ -35,9 +36,12 @@ export const PALETTE = {
   waterShallow: 0x7fc0bd,
   waterDeep: 0x2f6687,
   foam: 0xf4efe2,
-  canopyLow: 0x3e6243,
-  canopyHigh: 0x6f9455,
+  canopyLow: 0x41653f,
+  canopyHigh: 0x8aa65a,
   trunk: 0x6b5137,
+  pineLow: 0x2c4a3d,
+  pineHigh: 0x587d5e,
+  pineTrunk: 0x574333,
 } as const;
 
 /** How far the inked-in world reaches around the player, in tiles. Stands in for M5's explored area. */
@@ -258,32 +262,46 @@ void main() {
 }
 
 /**
- * Instanced foliage. Each instance carries its baked shade in `instanceColor`
- * (ambient occlusion, morning horizon, evening horizon) and shrinks into the
- * map at the edge of the known world.
+ * Everything that grows: instanced trees and each chunk's merged ground cover.
+ * `aColor.a` is the vertex's height above its root (in units of `lift` tiles).
+ * Trees carry their baked shade per instance in `instanceColor` (ambient
+ * occlusion, morning horizon, evening horizon); ground cover carries it per
+ * vertex in `aShade`. Both grow out of the map at the edge of the known world.
  */
-export function foliageMaterial(): ShaderMaterial {
-  return material(
+export function foliageMaterial(lift: number, doubleSided = false): ShaderMaterial {
+  const m = material(
     VERT_COMMON + /* glsl */ `
-attribute vec3 aColor;
+attribute vec4 aColor;
+#ifndef USE_INSTANCING
+attribute vec3 aShade;
+#endif
 varying vec3 vLit;
 varying float vReveal;
 varying vec2 vMap;
 void main() {
+  vec3 albedo = toLinear(aColor.rgb);
+#ifdef USE_INSTANCING
   vec3 origin = instanceMatrix[3].xyz;
   vec3 local = (instanceMatrix * vec4(position, 1.0)).xyz;
+  vec3 n = normalize(mat3(instanceMatrix) * normal);
+  vec3 shade = instanceColor;
+  // No two trees quite the same green: some cooler and deeper, some warmer and sunnier, by where they stand.
+  float h = fract(sin(dot(origin.xz + modelMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);
+  albedo *= mix(vec3(0.84, 0.92, 0.98), vec3(1.14, 1.06, 0.84), h);
+#else
+  vec3 local = position;
+  vec3 origin = vec3(position.x, position.y - aColor.a * ${lift.toFixed(2)}, position.z);
+  vec3 n = normal;
+  vec3 shade = aShade;
+#endif
   vec4 root = modelMatrix * vec4(origin, 1.0);
   float reveal = revealAt(root.xz);
   float rise = riseOf(reveal);
-  // Trees stand up a little after the ground under them has risen.
+  // Things stand up a little after the ground under them has risen.
   float grow = smoothstep(0.62, 1.0, reveal);
   vec4 world = modelMatrix * vec4(origin + (local - origin) * grow, 1.0);
   world.y = mix(-0.03, world.y, rise);
-  vec3 n = normalize(mat3(instanceMatrix) * normal);
-  // A little variety per tree, from where it stands.
-  float h = fract(sin(dot(root.xz, vec2(12.9898, 78.233))) * 43758.5453);
-  vec3 albedo = toLinear(aColor) * (0.86 + 0.28 * h);
-  vLit = mix(uParchment * 0.8, albedo * lightOn(n, instanceColor.x, bakedShadow(instanceColor)), grow);
+  vLit = mix(uParchment * 0.8, albedo * lightOn(n, shade.x, bakedShadow(shade)), grow);
   vReveal = reveal;
   vMap = world.xz;
   gl_Position = projectionMatrix * viewMatrix * world;
@@ -298,6 +316,8 @@ void main() {
   ${FRAG_END}
 }`,
   );
+  if (doubleSided) m.side = DoubleSide;
+  return m;
 }
 
 /** Water: depth-tinted, faceted by its own ripples, with a sun glint and a lapping foam line at the shore. */
@@ -379,15 +399,21 @@ void main() {
   );
 }
 
-/** A smooth-shaded solid colour under the same light and grade (explorers, for now). */
-export function solidMaterial(color: Color): ShaderMaterial {
+/**
+ * A solid colour under the same light and grade (explorers, for now). `shade` is the baked shade of the
+ * ground it stands on (see Terrain.shadeAt), so a figure walking into a hill's shadow darkens with the land.
+ * The model's `aTone` (optional, 0–1 per vertex) darkens parts of it, such as a base.
+ */
+export function solidMaterial(color: Color, shade: Vector3): ShaderMaterial {
   return material(
     VERT_COMMON + /* glsl */ `
 uniform vec3 uColor;
+uniform vec3 uShade;
+attribute float aTone;
 varying vec3 vLit;
 void main() {
   vec3 n = normalize(mat3(modelMatrix) * normal);
-  vLit = uColor * lightOn(n, 1.0, 1.0);
+  vLit = uColor * aTone * lightOn(n, uShade.x, bakedShadow(uShade));
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`,
     FRAG_COMMON + /* glsl */ `
@@ -396,8 +422,39 @@ void main() {
   gl_FragColor = vec4(grade(vLit), 1.0);
   ${FRAG_END}
 }`,
-    { uColor: { value: color } },
+    { uColor: { value: color }, uShade: { value: shade } },
   );
+}
+
+/**
+ * The soft shadow a small thing leaves on the ground: a disc that fades to nothing at its rim (`aFade`),
+ * darkening what is under it toward the sky's shadow colour. `uStrength.x` is its strength in the sun.
+ */
+export function blobShadowMaterial(strength: Vector2): ShaderMaterial {
+  const m = material(
+    VERT_COMMON + /* glsl */ `
+attribute float aFade;
+varying float vFade;
+void main() {
+  vFade = aFade;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+    FRAG_COMMON + /* glsl */ `
+uniform vec2 uStrength;
+varying float vFade;
+void main() {
+  float a = vFade * vFade * (3.0 - 2.0 * vFade);
+  gl_FragColor = vec4(grade(uSkyColor * 0.22), a * uStrength.x);
+  ${FRAG_END}
+}`,
+    { uStrength: { value: strength } },
+  );
+  m.transparent = true;
+  m.depthWrite = false;
+  m.polygonOffset = true;
+  m.polygonOffsetFactor = -2;
+  m.polygonOffsetUnits = -2;
+  return m;
 }
 
 /** Sets the shared uniforms each frame. For now one fixed key light: a late-afternoon sun. */
