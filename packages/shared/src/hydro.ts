@@ -54,8 +54,11 @@ const EDGE = REGION_EDGE;
 const LAKE_MIN = 0.03;
 /** How deep the lake at the lowest point of a basin too wide to flood is. */
 const SINK = 0.04;
-/** How deep the pond is where water collects with no way out. */
-const POND = 0.05;
+/** Where water ends on open ground it stands in a pond this deep and this many tiles across, dug into the ground. */
+const POND_DEPTH = 0.06;
+const POND_RADIUS = 10;
+/** Region.flow of a node with a pond. */
+export const POND = -2;
 /** A lake's water stops this far below the land at the nodes around it. */
 const SHORE = 0.02;
 /** Rain gathered (1 or 2 per node, by climate) that makes a stream, and a river. Both at most REACH + 1, see `kinds`. */
@@ -93,7 +96,7 @@ export interface Region {
   level: Float64Array;
   /** The level of the lake a node is under, or NaN. */
   lake: Float64Array;
-  /** Which neighbour (0-7) a node drains to, or -1 (sea, or water with no way out). */
+  /** Which neighbour (0-7) a node drains to; -1 for none (the sea, or a lake with no way out); POND where water ends on open ground. */
   flow: Int8Array;
   /** Channel.None, Stream or River: what leaves the node. */
   kind: Uint8Array;
@@ -344,8 +347,8 @@ export function computeRegion(seed: number, rx: number, ry: number, extra = 0): 
     for (let i = 0; i < EDGE; i++, o++) {
       const k = (j + skip) * S + i + skip;
       out.level[o] = level[k];
-      out.lake[o] = lake[k] ? level[k] : pond[k] ? level[k] + POND : NaN;
-      out.flow[o] = to[k] < 0 ? -1 : off.indexOf(to[k] - k);
+      out.lake[o] = lake[k] || pond[k] ? level[k] : NaN;
+      out.flow[o] = pond[k] ? POND : to[k] < 0 ? -1 : off.indexOf(to[k] - k);
       out.kind[o] = sea[k] ? Channel.None : kinds(rain[k], step[k] > 0);
       out.rain[o] = Math.min(65535, rain[k]);
     }
@@ -552,59 +555,81 @@ export function landAt(seed: number, x: number, y: number, g: Ground): void {
   if (r !== piecesOf || i0 !== piecesI || j0 !== piecesJ) gatherPieces(r, i0, j0);
   let u = g.u;
 
-  if (pieceCount) {
-    // Each channel nearby asks for a valley: no higher than its banks rising away from it, and no
-    // lower than a gentle levee falling away from it. Where they disagree the valley wins.
-    let cut = Infinity, fill = -Infinity, water = Infinity, channel = 0;
-    for (let o = 0; o < pieceCount * PIECE; o += PIECE) {
-      const ax = pieces[o], ay = pieces[o + 1], dx = pieces[o + 2] - ax, dy = pieces[o + 3] - ay;
-      let t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const ex = x - (ax + t * dx), ey = y - (ay + t * dy);
-      const half = pieces[o + 6] + (pieces[o + 7] - pieces[o + 6]) * t;
-      const far = half + CARVE, d2 = ex * ex + ey * ey;
-      if (d2 > far * far) continue;
-      const surface = pieces[o + 4] + (pieces[o + 5] - pieces[o + 4]) * t;
-      const out = Math.sqrt(d2) - half;
-      if (out <= 0) {
-        if (surface < water) water = surface;
-        if (pieces[o + 8] > channel) channel = pieces[o + 8];
-        if (surface < cut) cut = surface;
-        if (surface > fill) fill = surface;
-      } else {
-        if (surface + BANK * out < cut) cut = surface + BANK * out;
-        if (surface - LEVEE * out > fill) fill = surface - LEVEE * out;
-      }
-    }
-    if (fill > u) u = fill;
-    if (cut < u) u = cut;
-    if (channel) {
-      // The water's surface. It meets a lake at the lake's own level, so it is not sunk below its banks.
-      u = water;
-      g.channel = channel;
+  // A pond: a bowl dug around the river point of a node where water ends.
+  const k = j0 * EDGE + i0;
+  for (let c = 0; c < 4; c++) {
+    const q = k + (c & 1) + (c >> 1) * EDGE;
+    if (r.flow[q] !== POND) continue;
+    const gx = r.x0 + i0 + (c & 1), gy = r.y0 + j0 + (c >> 1);
+    const ex = x - (gx * NODE + JITTER * nudge(seed, gx, gy, 0x3a71)), ey = y - (gy * NODE + JITTER * nudge(seed, gx, gy, 0x51c9));
+    const near = 1 - (ex * ex + ey * ey) / (POND_RADIUS * POND_RADIUS);
+    if (near > 0 && r.level[q] - POND_DEPTH * near < u) u = r.level[q] - POND_DEPTH * near;
+  }
+
+  // Each channel nearby asks for a valley: no higher than its banks rising away from it, and no lower
+  // than a gentle levee falling away from it. Where they disagree the valley wins.
+  let cut = Infinity, fill = -Infinity, water = Infinity, channel = 0;
+  for (let o = 0; o < pieceCount * PIECE; o += PIECE) {
+    const ax = pieces[o], ay = pieces[o + 1], dx = pieces[o + 2] - ax, dy = pieces[o + 3] - ay;
+    let t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = x - (ax + t * dx), ey = y - (ay + t * dy);
+    const half = pieces[o + 6] + (pieces[o + 7] - pieces[o + 6]) * t;
+    const far = half + CARVE, d2 = ex * ex + ey * ey;
+    if (d2 > far * far) continue;
+    const surface = pieces[o + 4] + (pieces[o + 5] - pieces[o + 4]) * t;
+    const out = Math.sqrt(d2) - half;
+    if (out <= 0) {
+      if (surface < water) water = surface;
+      if (pieces[o + 8] > channel) channel = pieces[o + 8];
+      if (surface < cut) cut = surface;
+      if (surface > fill) fill = surface;
+    } else {
+      if (surface + BANK * out < cut) cut = surface + BANK * out;
+      if (surface - LEVEE * out > fill) fill = surface - LEVEE * out;
     }
   }
 
   // Lakes. The water's height here is the lake's level near its own nodes, falling away to below the
-  // ground towards nodes that aren't under it; never above the level itself. Not on the strip along
-  // the coast: a lake never touches the sea.
-  const k = j0 * EDGE + i0;
+  // ground towards nodes that aren't under it; never above the level itself (the lower level, where
+  // two lakes meet, so water only steps down from one to the other). Not on the strip along the
+  // coast: a lake never touches the sea.
+  let lake = -Infinity;
   const a = r.lake[k], b = r.lake[k + 1], c = r.lake[k + EDGE], d = r.lake[k + EDGE + 1];
   if (g.inland >= COAST_STRIP && (a === a || b === b || c === c || d === d)) {
-    let cap = -Infinity;
-    if (a === a && a > cap) cap = a;
-    if (b === b && b > cap) cap = b;
-    if (c === c && c > cap) cap = c;
-    if (d === d && d > cap) cap = d;
+    let cap = Infinity;
+    if (a === a && a < cap) cap = a;
+    if (b === b && b < cap) cap = b;
+    if (c === c && c < cap) cap = c;
+    if (d === d && d < cap) cap = d;
     const fx = x / NODE - nx, fy = y / NODE - ny;
     const la = a === a ? a : r.level[k] - SHORE, lb = b === b ? b : r.level[k + 1] - SHORE;
     const lc = c === c ? c : r.level[k + EDGE] - SHORE, ld = d === d ? d : r.level[k + EDGE + 1] - SHORE;
     const north = la + (lb - la) * fx, south = lc + (ld - lc) * fx;
-    let surface = north + (south - north) * fy;
-    if (surface > cap) surface = cap;
-    g.lake = surface - u;
-    if (surface > u) {
-      u = surface;
+    lake = north + (south - north) * fy;
+    if (lake > cap) lake = cap;
+    if (lake > u) {
+      // Under the lake already. The flow that crosses a lake leaves its bed alone; where a channel's
+      // water stands above the lake's thinning edge, the surface is the channel's.
+      if (channel && water > lake) lake = water;
+      g.lake = lake - u;
+      g.u = lake;
+      return;
+    }
+  }
+
+  if (fill > u) u = fill;
+  if (cut < u) u = cut;
+  if (channel) {
+    // The water's surface. It meets a lake at the lake's own level, so it is not sunk below its banks.
+    u = water;
+    g.channel = channel;
+  }
+  // A channel can cut the ground at a lake's edge to below its water.
+  if (lake > -Infinity) {
+    g.lake = lake - u;
+    if (lake > u) {
+      u = lake;
       g.channel = 0;
     }
   }
