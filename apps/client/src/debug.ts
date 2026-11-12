@@ -1,5 +1,6 @@
 import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type TileEdits, type ZoneId } from '@terra/shared';
 import type { Session } from './net/session.ts';
+import type { PerfStats } from './render/view.ts';
 
 const STORE_KEY = 'ti.debug';
 
@@ -13,6 +14,8 @@ export interface DebugState {
   edits: TileEdits;
   /** This device's public key, the author id on its edits. */
   author: string;
+  /** Renderer cost, or null when not drawing (`#render=0`). */
+  perf: PerfStats | null;
 }
 
 /**
@@ -57,7 +60,7 @@ export class DebugPanel {
 
   render(s: DebugState) {
     if (!this.visible) return;
-    this.el.textContent = [...zoneLines(s), '', ...netLines(s), '', ...editLines(s)].join('\n');
+    this.el.textContent = [...perfLines(s), ...zoneLines(s), '', ...netLines(s), '', ...editLines(s)].join('\n');
   }
 }
 
@@ -72,6 +75,19 @@ function load(): boolean {
 const label = (seed: number, z: ZoneId) => `${z}  ${zoneName(seed, z)}`;
 const short = (id: string) => id.slice(0, 8);
 const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)}ms`);
+
+/** Renderer cost against the budgets in docs/ART_DIRECTION.md (12 ms, 150 draw calls, 300k triangles). */
+function perfLines({ perf }: DebugState): string[] {
+  if (!perf) return [];
+  const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  return [
+    `FRAME  ${perf.frameMs.toFixed(1)}ms avg  ·  ${perf.frameP95.toFixed(1)}ms p95  ·  ${Math.round(1000 / (perf.frameMs || 1))} fps`,
+    `       cpu ${perf.cpuMs.toFixed(1)}ms avg, ${perf.cpuMax.toFixed(1)}ms worst  ·  pixel ratio ${perf.pixelRatio}`,
+    `DRAW   ${perf.drawCalls} calls  ·  ${k(perf.triangles)} triangles  ·  ${perf.geometries} geometries  ·  ${perf.textures} textures`,
+    `CHUNKS ${perf.chunkBuilds} built  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms`,
+    '',
+  ];
+}
 
 function zoneLines({ seed, zone, self }: DebugState): string[] {
   const [cx, cy] = parseZone(zone);
