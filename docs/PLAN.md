@@ -50,6 +50,7 @@ infra/            docker-compose: signal + coturn + seed
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
+| M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | Planned, not built. To be built before M5 (see "Natural terrain") |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
@@ -121,6 +122,44 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **A Node peer is a slow host.** For the seed to host zones (M7), node-datachannel's `send` cost applies: a bot host spent 5.5ms a tick on 24 clients on this machine.
 - **Node timers on Windows fire in steps of about 16ms**, so a 50ms interval ran at 16 Hz. Sessions now book each tick against an ideal timeline, which also keeps the rate under load in browsers.
 
+## Natural terrain (planned 2026-11-12, not built)
+**Why.** Today `tileAt` cuts one elevation noise and one moisture noise at fixed thresholds, the same everywhere. Every hill is the same kind of hill, all water is one kind of water, and the land reads as a blob. Sid wants terrain that looks like the natural world: rivers and streams shaped by gravity, steep mountains and sheer cliffs, wide plains with little relief, and oceans that are distinct from lakes and ponds.
+
+**When.** Before the M5 build starts. M5's first slice wipes existing worlds anyway, and M5 then freezes where landmarks and resources go (`landmarkAt`, `nodeAt`), which sit on top of the terrain. Changing terrain after that moves everything players have found.
+
+**Step 1: layered maps.** Still a pure function of `(seed, x, y)`, at about today's cost.
+- Separate large-scale maps: how far inland (continents against ocean), how eroded (flat against rugged), ridges and valleys, temperature, rainfall.
+- Height comes from curves over those maps, so plains, foothills and ranges are different places. A steep step in a curve makes a cliff.
+- Ridged and warped noise, so mountains form chains with spurs.
+- Ocean is defined by the continent map, not by elevation, so inland water is a lake by definition.
+- Biomes come from temperature, rainfall and altitude together. The snow line moves with climate.
+- Done when: one seed shows plains, ranges, cliffs, an ocean and separate lakes within a few thousand tiles; and a fixed sample of the world hashes to the same value in Node, Chromium and one other browser engine.
+
+**Step 2: rivers, by simulating each region.**
+- The world is cut into large squares. For each, a coarse heightmap is built from the seed, water is routed downhill, basins fill into lakes with outlets, and the result is cached.
+- Rivers are carved into the terrain, so valleys follow them. Streams join into rivers and reach a lake or the sea.
+- Where rivers cross from one region to the next is fixed from the seed of the shared edge, so neighbouring regions agree without knowing each other.
+- The precompute runs in a worker on the client, and in the seed and bots too.
+- Done when: every river tile has a downhill path to a lake or the sea; rivers line up across region edges; a region's precompute fits a budget measured on the dev machine and recorded here; and the same cross-engine hash check passes.
+
+**Constraints.**
+- **Every device must compute exactly the same world.** The host checks movement against the same tiles. The generator uses only arithmetic that is exact everywhere (add, subtract, multiply, divide, square root, integer hashes), never `sin`, `pow` or similar, which can differ between engines. The cross-engine hash check is part of the done-when for that reason.
+- `packages/shared` stays isomorphic.
+- It changes every existing world. Worlds are wiped when it lands.
+- It won't be true geology. Step 1 gives "reads as natural". Step 2 gets close to "looks like a real map". Full erosion at tile detail across an endless world isn't practical.
+
+**What it changes elsewhere.**
+- **Renderer:** sheer cliffs need vertical faces in the chunk mesh. New water kinds (river, lake, sea) and new biomes need colours and ground cover. This answers two of the visual foundation's findings: "worldgen has one climate" and "sea and lake are the same tile".
+- **Movement:** today any tile that isn't deep water, snow or a wall is walkable, however steep. Cliffs and rivers need rules in `step()`.
+- **M5 design:** bridges and steps already exist to cross deep water and snow, so rivers and cliffs give them more to do. Landmark and resource placement should be built on the new terrain.
+- **Chunk building in a worker** (a visual foundation finding) becomes necessary, not optional.
+
+**To decide before building.**
+1. Can players climb steep slopes, or do cliffs block until someone builds steps?
+2. Do rivers block, slow (wade) or carry the player?
+3. Which new tile types to add (river, lake, cliff, and which biomes), since each needs a look.
+4. The region size for step 2.
+
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
 - **Catching up (answered in M4a):** when a client connects, it sends its host a digest per zone chunk (count, highest clock and a hash of its ops). The host sends the chunks where it differs and asks for the chunks where the client has edits, so both converge. A new host already holds its zone's edits: it was a client there.
@@ -170,6 +209,8 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Hosts of neighbouring zones (incl. diagonals) share one direct link, listed by the signal server | Players see across borders while clients still connect only to their own host. The server already knows every zone's host, so it sends each host its neighbours. The lower peer id dials, so each pair has one link. |
 | Art style: a low-poly diorama on a parchment map; unexplored land is blank parchment that inks in | It builds on the existing renderer, stays small for a PWA and makes the game's name the look. Details in ART_DIRECTION.md. |
 | The visual foundation (lighting, shaders, biomes, time of day, weather) is built before M5; bulk assets wait for the M5 mechanics | The foundation doesn't depend on mechanics. Props, icons and sounds do. |
+| Replace threshold-on-noise terrain with layered maps, then region-simulated rivers, before M5 | Sid wants terrain that looks natural. M5 wipes worlds at its first slice and then freezes landmark and resource placement, so before M5 is the cheapest time. |
+| Rivers come from simulating each large region, not from carved noise lines | Sid asked for rivers shaped by gravity. Noise lines are cheaper but don't truly flow downhill. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 | Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |
 | A hand-written binary codec for the unreliable channel only; reliable messages stay JSON | Snapshots and position reports are almost all the traffic. A varint codec is about 250 lines and needs no dependency. Reliable messages are rare, and JSON keeps them easy to read and change. |
