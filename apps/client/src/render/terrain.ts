@@ -208,6 +208,20 @@ const latDrift = new Float32Array(LN * LN);
 /** The tile being built: its two facets, each as normal bytes (3), colour (3) and normal.y. */
 const facet = new Float32Array(14);
 const basePad = new Uint8Array((CHUNK + 2) * (CHUNK + 2));
+/** The generated tiles of the chunk and two tiles around it, for finding cliffs and what lies beside them. */
+const CP = CHUNK + 4;
+const tilePad = new Uint8Array(CP * CP);
+/** An edge between two cliff tiles is cut by a wall when its corners differ by more than this (tiles of height). */
+const MIN_STEP = 0.5;
+/** Per corner of the chunk: 1 if it is on the upper side of a cliff, 0 if on the lower side or nowhere near one. */
+const cornerUpper = new Uint8Array(N * N);
+/** The kinds of facet a cliff tile is built from (see `emit`). */
+const GROUND_FACET = 0, WALL = 1, BANK = 2;
+/** Scratch for the points a cliff tile is built from (see `cliffTile`). */
+const NODES = 32;
+const nodeX = new Float32Array(NODES), nodeY = new Float32Array(NODES), nodeZ = new Float32Array(NODES);
+const nodeR = new Float32Array(NODES), nodeG = new Float32Array(NODES), nodeB = new Float32Array(NODES);
+const nodeAo = new Float32Array(NODES), nodeEast = new Float32Array(NODES), nodeWest = new Float32Array(NODES);
 
 /** How high the land rises (as a fraction of 90°) looking from a window point along a direction. */
 function horizon(occ: Float32Array, px: number, py: number, h0: number, dir: readonly [number, number]): number {
@@ -391,6 +405,16 @@ export class Terrain {
       const inside = x >= 0 && y >= 0 && x < CHUNK && y < CHUNK;
       basePad[(y + 1) * P + x + 1] = inside ? base[y * CHUNK + x] : this.baseTile(ox + x, oy + y);
     }
+    // Cliffs are found from generated tiles too, so neighbouring chunks agree where a wall crosses their seam.
+    let cliffTiles = 0, cliffsNear = false;
+    for (let y = -2; y < CHUNK + 2; y++) for (let x = -2; x < CHUNK + 2; x++) {
+      const inside = x >= 0 && y >= 0 && x < CHUNK && y < CHUNK;
+      const t = inside ? base[y * CHUNK + x] : this.baseTile(ox + x, oy + y);
+      tilePad[(y + 2) * CP + x + 2] = t;
+      if (t !== Tile.Cliff) continue;
+      cliffsNear = true;
+      if (inside) cliffTiles++;
+    }
 
     // Per corner: position, blended colour, ambient occlusion and the two baked horizons.
     // Corners on a chunk edge come out identical in both chunks, so seams match.
@@ -419,9 +443,13 @@ export class Terrain {
       // A second, slower drift decides which plants gather where: flower colonies, reed beds, stands of pine.
       const d0 = latDrift[l] + (latDrift[l + 1] - latDrift[l]) * fx, d1 = latDrift[l + LN] + (latDrift[l + LN + 1] - latDrift[l + LN]) * fx;
       cornerDrift[i] = d0 + (d1 - d0) * fy;
-      let r = 0, g = 0, b = 0, forest = 0, desert = 0, tundra = 0, marsh = 0, lake = 0;
+      let r = 0, g = 0, b = 0, forest = 0, desert = 0, tundra = 0, marsh = 0, lake = 0, open = 0;
       for (let k = 0; k < 4; k++) {
         const t = basePad[(y + (k >> 1)) * P + x + (k & 1)], c = t * 6;
+        // A cliff's stone belongs to its face. The ground at its top and its foot takes the colours of the
+        // land beside it, so grass runs right up to the edge.
+        if (t === Tile.Cliff) continue;
+        open++;
         r += GROUND_FLAT[c] + GROUND_FLAT[c + 3] * tone;
         g += GROUND_FLAT[c + 1] + GROUND_FLAT[c + 4] * tone;
         b += GROUND_FLAT[c + 2] + GROUND_FLAT[c + 5] * tone;
@@ -431,7 +459,12 @@ export class Terrain {
         else if (t === Tile.Marsh) marsh++;
         else if (t === Tile.Lake || t === Tile.LakeShallows) lake++;
       }
-      r /= 4; g /= 4; b /= 4;
+      if (open) { r /= open; g /= open; b /= open; }
+      else {
+        // Only cliff around: a ledge of bare stone.
+        const c = Tile.Cliff * 6;
+        r = GROUND_FLAT[c] + GROUND_FLAT[c + 3] * tone; g = GROUND_FLAT[c + 1] + GROUND_FLAT[c + 4] * tone; b = GROUND_FLAT[c + 2] + GROUND_FLAT[c + 5] * tone;
+      }
       cornerLake[i] = lake ? 1 : 0;
       if (desert) {
         // Dunes: broad ripples lying across the prevailing wind, bent by the slow drift so no two run alike.
@@ -468,7 +501,8 @@ export class Terrain {
     }
 
     // Non-indexed: every triangle is its own facet, with its own normal and colour.
-    const count = CHUNK * CHUNK * 6;
+    // Room for the walls and cut ground of every cliff tile; trimmed to what was used once the chunk is built.
+    const count = (CHUNK * CHUNK * 2 + cliffTiles * 24) * 3;
     const pos = new Float32Array(count * 3);
     const nor = new Int8Array(count * 3);
     // rgb, then how strongly the rock's bedding shows on this facet (see the ground shader).
@@ -499,9 +533,11 @@ export class Terrain {
           const own = Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny);
           const slope = 0.7 * (cornerSteep[a] + cornerSteep[b] + cornerSteep[c]) / 3 + 0.3 * own;
           if (t === Tile.Cliff) {
-            // A cliff is its own stone where it is sheer, and keeps a little of the land it cuts through:
-            // a mesa in the desert is redder than an escarpment in grassland.
-            const s = smoothstep(0.45, 0.9, slope), tone = (cornerTone[a] + cornerTone[b] + cornerTone[c]) / 3;
+            // A cliff tile that holds no wall is the ground at the cliff's top or foot, and keeps that
+            // ground's colours; it shows stone only where it is itself very steep (a broad mountain face).
+            // Stone keeps a little of the land it cuts through: a mesa in the desert is redder than an
+            // escarpment in grassland.
+            const s = smoothstep(0.95, 1.6, own), tone = (cornerTone[a] + cornerTone[b] + cornerTone[c]) / 3;
             const lo = GROUND[Tile.Cliff][0], hi = GROUND[Tile.Cliff][1], m = s * 0.7;
             r += (lo[0] + (hi[0] - lo[0]) * tone - r) * m;
             g += (lo[1] + (hi[1] - lo[1]) * tone - g) * m;
@@ -532,6 +568,229 @@ export class Terrain {
         shade[o] = cornerShade[i * 3]; shade[o + 1] = cornerShade[i * 3 + 1]; shade[o + 2] = cornerShade[i * 3 + 2];
         v++;
       }
+    };
+
+    // ---- Sheer cliffs. A cliff tile is not drawn as one steep slope. A wall runs through it, with level
+    // ground above and below.
+    //
+    // Every corner near a cliff is either on the upper side or the lower side of the drop, by whether it
+    // stands above or below the middle of the heights around it. The wall crosses each edge of a cliff tile
+    // that joins an upper corner to a lower one, half-way along, so it follows the cliff's contour through
+    // tile after tile. A corner that only cliff tiles touch carries no ground anyone can stand on, so it is
+    // moved to the level of the open ground on its own side: the whole drop is then taken by the wall.
+    //
+    // All of this is decided per corner and per edge, from generated tiles and heights, so the two tiles
+    // (and the two chunks) that share an edge always agree about it. Where a cut edge is shared with open
+    // ground, which keeps its true slope, the cliff tile closes the gap with a wedge of stone above the
+    // slope and another below it. The mesh stays closed, and open ground is never reshaped: an explorer
+    // always stands on the heights the rest of the game uses.
+    const cliffAt = (tx: number, ty: number) => (tilePad[(ty + 2) * CP + tx + 2] === Tile.Cliff ? 1 : 0);
+    /** How many of the four tiles around a corner are cliffs. Corners may lie one outside the chunk. */
+    const cliffsAround = (x: number, y: number) => cliffAt(x - 1, y - 1) + cliffAt(x, y - 1) + cliffAt(x - 1, y) + cliffAt(x, y);
+    /** Whether a corner stands above the middle of the heights around it (the 5 by 5 corners centred on it). */
+    const isUpper = (x: number, y: number) => {
+      const w = (y + M) * WIN + x + M;
+      let lo = Infinity, hi = -Infinity;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+        const h = winRaw[w + dy * WIN + dx];
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+      return winRaw[w] > (lo + hi) / 2;
+    };
+    if (cliffsNear) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = y * N + x, around = cliffsAround(x, y);
+      cornerUpper[i] = 0;
+      if (!around) continue;
+      const up = isUpper(x, y);
+      cornerUpper[i] = up ? 1 : 0;
+      if (around < 4) continue;
+      // Only cliff around: take the level, and the colours, of the open ground beside it on the same side
+      // of the drop, so grass runs to the cliff's edge and the beach to its foot. Deep inside a broad
+      // cliff there is no such ground: it stays stone, at the furthest that side reaches.
+      const w = (y + M) * WIN + x + M, tone = cornerTone[i];
+      let sum = 0, weight = 0, reach = winRaw[w], r = 0, g = 0, b = 0, tiles = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if ((!dx && !dy) || isUpper(x + dx, y + dy) !== up) continue;
+        const h = winRaw[w + dy * WIN + dx];
+        if (cliffsAround(x + dx, y + dy) < 4) {
+          const k = dx && dy ? 1 : 2;
+          sum += h * k;
+          weight += k;
+          for (let q = 0; q < 4; q++) {
+            const t = tilePad[(y + dy + (q >> 1) + 1) * CP + x + dx + (q & 1) + 1];
+            if (t === Tile.Cliff) continue;
+            r += GROUND_FLAT[t * 6] + GROUND_FLAT[t * 6 + 3] * tone;
+            g += GROUND_FLAT[t * 6 + 1] + GROUND_FLAT[t * 6 + 4] * tone;
+            b += GROUND_FLAT[t * 6 + 2] + GROUND_FLAT[t * 6 + 5] * tone;
+            tiles++;
+          }
+        } else if (up ? h > reach : h < reach) reach = h;
+      }
+      hc[i] = weight ? sum / weight : reach;
+      if (tiles) {
+        cornerColor[i * 3] = r / tiles; cornerColor[i * 3 + 1] = g / tiles; cornerColor[i * 3 + 2] = b / tiles;
+      }
+    }
+    /** Whether a wall crosses the edge between corners a and b of a cliff tile. */
+    const cutEdge = (a: number, b: number) => cornerUpper[a] !== cornerUpper[b] && Math.abs(hc[a] - hc[b]) > MIN_STEP;
+
+    // The points a cliff tile is built from: its corners, and two for each wall's end (its top and its foot).
+    let nodes = 0;
+    const cornerNode = (i: number) => {
+      const n = nodes++;
+      nodeX[n] = cornerX[i]; nodeY[n] = hc[i]; nodeZ[n] = cornerZ[i];
+      nodeR[n] = cornerColor[i * 3]; nodeG[n] = cornerColor[i * 3 + 1]; nodeB[n] = cornerColor[i * 3 + 2];
+      nodeAo[n] = cornerShade[i * 3]; nodeEast[n] = cornerShade[i * 3 + 1]; nodeWest[n] = cornerShade[i * 3 + 2];
+      return n;
+    };
+    /** A wall's end, half-way along the edge a→b, at the height and in the colours of corner `level`. The foot sits in a little shade. */
+    const stepNode = (a: number, b: number, level: number, foot: boolean) => {
+      const n = cornerNode(level);
+      nodeX[n] = (cornerX[a] + cornerX[b]) / 2;
+      nodeZ[n] = (cornerZ[a] + cornerZ[b]) / 2;
+      if (foot) nodeAo[n] *= 0.76;
+      return n;
+    };
+    const stone = [0, 0, 0];
+    let faceX = 0, faceZ = 0;
+    /**
+     * One facet of a cliff tile. Level ground keeps its colours. A wall (WALL) faces (faceX, faceZ) and is
+     * bare stone. A bank (BANK) stands upright like a wall but is lit and coloured as the ground it rises
+     * from, so it reads as a lip of turf at the cliff's edge and not as a spike of rock.
+     */
+    const emit = (a: number, b: number, c: number, kind: number, t: Tile, edited: boolean, jitter: number) => {
+      const wall = kind === WALL;
+      const ax = nodeX[a], ay = nodeY[a], az = nodeZ[a];
+      const ux = nodeX[b] - ax, uy = nodeY[b] - ay, uz = nodeZ[b] - az;
+      const wx = nodeX[c] - ax, wy = nodeY[c] - ay, wz = nodeZ[c] - az;
+      let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      const nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-7) return;
+      nx /= nl; ny /= nl; nz /= nl;
+      const flip = kind === GROUND_FACET ? ny < 0 : nx * faceX + nz * faceZ < 0;
+      if (flip) { nx = -nx; ny = -ny; nz = -nz; }
+      let r = (nodeR[a] + nodeR[b] + nodeR[c]) / 3, g = (nodeG[a] + nodeG[b] + nodeG[c]) / 3, bl = (nodeB[a] + nodeB[b] + nodeB[c]) / 3;
+      let strata = 0;
+      if (wall) {
+        // Bare stone, with a little of the land it cuts through.
+        r = stone[0] * 0.82 + r * 0.18; g = stone[1] * 0.82 + g * 0.18; bl = stone[2] * 0.82 + bl * 0.18;
+        strata = 1;
+      } else if (edited) {
+        const c0 = GROUND[t][0];
+        r = c0[0]; g = c0[1]; bl = c0[2];
+      } else if (kind === BANK) {
+        nx = 0; ny = 1; nz = 0;
+      } else {
+        // The ground above and below a wall keeps its own colours, even where it tilts. Only what is left
+        // really steep (the ramp at a wall's end) shows stone.
+        const s = smoothstep(0.95, 1.6, Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny)) * 0.7;
+        r += (stone[0] - r) * s; g += (stone[1] - g) * s; bl += (stone[2] - bl) * s;
+        strata = s;
+      }
+      const k = 0.955 + jitter * 0.09;
+      r = Math.min(255, r * k); g = Math.min(255, g * k); bl = Math.min(255, bl * k);
+      const bnx = Math.round(nx * 127), bny = Math.round(ny * 127), bnz = Math.round(nz * 127), bedding = Math.round(strata * 255);
+      for (let n = 0; n < 3; n++) {
+        const i = n === 0 ? a : (n === 1) !== flip ? b : c, o = v * 3, o4 = v * 4;
+        pos[o] = nodeX[i]; pos[o + 1] = nodeY[i]; pos[o + 2] = nodeZ[i];
+        nor[o] = bnx; nor[o + 1] = bny; nor[o + 2] = bnz;
+        col[o4] = r; col[o4 + 1] = g; col[o4 + 2] = bl; col[o4 + 3] = bedding;
+        shade[o] = nodeAo[i]; shade[o + 1] = nodeEast[i]; shade[o + 2] = nodeWest[i];
+        v++;
+      }
+    };
+    const loop: number[] = [], jumps: number[] = [];
+    /** Draw a cliff tile with its walls. Returns false, drawing nothing, if none of its edges is cut. */
+    const cliffTile = (tx: number, ty: number, t: Tile, edited: boolean, i00: number, i01: number, i11: number, i10: number, j0: number, j1: number) => {
+      // The tile's edges in the order its corners are walked (counter-clockwise seen from above).
+      const c0 = cutEdge(i00, i01), c1 = cutEdge(i01, i11), c2 = cutEdge(i11, i10), c3 = cutEdge(i10, i00);
+      if (!c0 && !c1 && !c2 && !c3) return false;
+      const lo = GROUND[Tile.Cliff][0], hi = GROUND[Tile.Cliff][1], tone = cornerTone[i00];
+      for (let k = 0; k < 3; k++) stone[k] = lo[k] + (hi[k] - lo[k]) * tone;
+      nodes = 0;
+      loop.length = 0;
+      jumps.length = 0;
+      for (let e = 0; e < 4; e++) {
+        const a = e === 0 ? i00 : e === 1 ? i01 : e === 2 ? i11 : i10;
+        const b = e === 0 ? i01 : e === 1 ? i11 : e === 2 ? i10 : i00;
+        loop.push(cornerNode(a));
+        if (e === 0 ? c0 : e === 1 ? c1 : e === 2 ? c2 : c3) {
+          jumps.push(loop.length);
+          loop.push(stepNode(a, b, a, hc[a] < hc[b]));
+          loop.push(stepNode(a, b, b, hc[b] < hc[a]));
+        }
+      }
+      let facets = 0;
+      const jit = () => (facets++ & 1 ? j1 : j0);
+      // Where a cut edge is shared with open ground, close the gap between this tile's step and that
+      // ground's slope: a bank standing above the slope, facing out, and a wedge of stone below it, facing in.
+      for (let e = 0, at = 0; e < 4; e++, at++) {
+        if (!(e === 0 ? c0 : e === 1 ? c1 : e === 2 ? c2 : c3)) continue;
+        const a = loop[at], sa = loop[at + 1], sb = loop[at + 2], b = loop[(at + 3) % loop.length];
+        at += 2;
+        if (cliffAt(e === 0 ? tx - 1 : e === 2 ? tx + 1 : tx, e === 1 ? ty + 1 : e === 3 ? ty - 1 : ty)) continue;
+        const mid = nodes++;
+        nodeX[mid] = nodeX[sa]; nodeZ[mid] = nodeZ[sa]; nodeY[mid] = (nodeY[a] + nodeY[b]) / 2;
+        const aUp = nodeY[a] > nodeY[b], hiN = aUp ? a : b, hiS = aUp ? sa : sb, loN = aUp ? b : a, loS = aUp ? sb : sa;
+        const outX = e === 0 ? -1 : e === 2 ? 1 : 0, outZ = e === 1 ? 1 : e === 3 ? -1 : 0;
+        nodeR[mid] = nodeR[hiN]; nodeG[mid] = nodeG[hiN]; nodeB[mid] = nodeB[hiN];
+        nodeAo[mid] = nodeAo[hiN]; nodeEast[mid] = nodeEast[hiN]; nodeWest[mid] = nodeWest[hiN];
+        faceX = outX; faceZ = outZ;
+        emit(hiN, hiS, mid, BANK, t, edited, jit());
+        nodeR[mid] = stone[0]; nodeG[mid] = stone[1]; nodeB[mid] = stone[2];
+        nodeAo[mid] = nodeAo[loS]; nodeEast[mid] = nodeEast[loS]; nodeWest[mid] = nodeWest[loS];
+        faceX = -outX; faceZ = -outZ;
+        emit(loN, loS, mid, WALL, t, edited, jit());
+      }
+      // Two walls' ends are joined by a wall across the tile, which cuts off the ground between them.
+      while (jumps.length >= 2) {
+        const a = jumps[0], b = jumps[1];
+        const p = loop[a], p1 = loop[a + 1], q = loop[b], q1 = loop[b + 1];
+        let cx = 0, cz = 0;
+        for (let k = a + 1; k <= b; k++) { cx += nodeX[loop[k]]; cz += nodeZ[loop[k]]; }
+        cx /= b - a; cz /= b - a;
+        for (let k = a + 2; k < b; k++) emit(p1, loop[k], loop[k + 1], GROUND_FACET, t, edited, jit());
+        // The wall faces the lower ground. Seen from one end it drops; if it also drops seen from the other,
+        // the two ends meet in a single face. If not (the ground between them slopes right through), the
+        // face is two triangles that meet at a point.
+        const mx = (nodeX[p] + nodeX[q]) / 2, mz = (nodeZ[p] + nodeZ[q]) / 2;
+        const side = nodeY[p1] < nodeY[p] ? 1 : -1;
+        faceX = (cx - mx) * side; faceZ = (cz - mz) * side;
+        if ((nodeY[p] - nodeY[p1]) * (nodeY[q1] - nodeY[q]) > 0) {
+          emit(p, p1, q, WALL, t, edited, jit());
+          emit(p, q, q1, WALL, t, edited, jit());
+        } else {
+          const u = (nodeY[p1] - nodeY[p]) / ((nodeY[q1] - nodeY[p]) - (nodeY[q] - nodeY[p1]) || 1e-6);
+          const x = nodes++;
+          nodeX[x] = nodeX[p] + (nodeX[q] - nodeX[p]) * u; nodeZ[x] = nodeZ[p] + (nodeZ[q] - nodeZ[p]) * u;
+          nodeY[x] = nodeY[p] + (nodeY[q1] - nodeY[p]) * u;
+          nodeR[x] = nodeR[p]; nodeG[x] = nodeG[p]; nodeB[x] = nodeB[p];
+          nodeAo[x] = nodeAo[p]; nodeEast[x] = nodeEast[p]; nodeWest[x] = nodeWest[p];
+          emit(p, p1, x, WALL, t, edited, jit());
+          faceX = -faceX; faceZ = -faceZ;
+          emit(q, q1, x, WALL, t, edited, jit());
+        }
+        loop.splice(a + 1, b - a);
+        jumps.splice(0, 2);
+        for (let k = 0; k < jumps.length; k++) jumps[k] -= b - a;
+      }
+      if (jumps.length === 1) {
+        // A wall that ends inside the tile: it tapers to nothing at a corner, and the ground ramps up beside it.
+        const a = jumps[0], m = loop.length;
+        const at = (k: number) => loop[(a + 1 + k) % m];
+        const foot = at(0), top = at(m - 1);
+        let apex = m >> 1;
+        if (m === 6) apex = Math.abs(nodeY[at(3)] - nodeY[at(4)]) <= Math.abs(nodeY[at(2)] - nodeY[at(1)]) ? 3 : 2;
+        for (let k = 1; k < apex; k++) emit(foot, at(k), at(k + 1), GROUND_FACET, t, edited, jit());
+        for (let k = apex; k < m - 2; k++) emit(top, at(k), at(k + 1), GROUND_FACET, t, edited, jit());
+        const toward = nodeY[foot] < nodeY[top] ? at(1) : at(m - 2);
+        faceX = nodeX[toward] - nodeX[foot]; faceZ = nodeZ[toward] - nodeZ[foot];
+        emit(top, foot, at(apex), WALL, t, edited, jit());
+      } else {
+        for (let k = 1; k < loop.length - 1; k++) emit(loop[0], loop[k], loop[k + 1], GROUND_FACET, t, edited, jit());
+      }
+      return true;
     };
 
     // ---- What grows on a tile. `fa` / `fb` are the corners of its two facets; `spot` picks a point on one.
@@ -778,21 +1037,26 @@ export class Terrain {
           fa[0] = i00; fa[1] = i01; fa[2] = i10;
           fb[0] = i10; fb[1] = i01; fb[2] = i11;
         }
-        tri(fa[0], fa[1], fa[2], t, edited, j0, 0);
-        tri(fb[0], fb[1], fb[2], t, edited, j1, 7);
+        const sheer = base[ty * CHUNK + tx] === Tile.Cliff && cliffTile(tx, ty, t, edited, i00, i01, i11, i10, j0, j1);
+        if (!sheer) {
+          tri(fa[0], fa[1], fa[2], t, edited, j0, 0);
+          tri(fb[0], fb[1], fb[2], t, edited, j1, 7);
+        }
         if (Math.min(hc[i00], hc[i10], hc[i01], hc[i11]) < 0.12) {
           waterIndex.push(fa[0], fa[1], fa[2], fb[0], fb[1], fb[2]);
         }
         // What players build is bare: paving a tile clears what grew there.
-        if (!edited && t !== Tile.DeepWater && t !== Tile.Lake) adorn(t, wx, wy, i00);
+        // Nothing is set on a tile that has been cut into walls and ledges.
+        if (!edited && !sheer && t !== Tile.DeepWater && t !== Tile.Lake) adorn(t, wx, wy, i00);
       }
     }
 
     const ground = new BufferGeometry();
-    ground.setAttribute('position', new BufferAttribute(pos, 3));
-    ground.setAttribute('normal', new BufferAttribute(nor, 3, true));
-    ground.setAttribute('aColor', new BufferAttribute(col, 4, true));
-    ground.setAttribute('aShade', new BufferAttribute(shade, 3, true));
+    const full = v === count;
+    ground.setAttribute('position', new BufferAttribute(full ? pos : pos.slice(0, v * 3), 3));
+    ground.setAttribute('normal', new BufferAttribute(full ? nor : nor.slice(0, v * 3), 3, true));
+    ground.setAttribute('aColor', new BufferAttribute(full ? col : col.slice(0, v * 4), 4, true));
+    ground.setAttribute('aShade', new BufferAttribute(full ? shade : shade.slice(0, v * 3), 3, true));
     ground.computeBoundingSphere();
 
     const group = new Group();

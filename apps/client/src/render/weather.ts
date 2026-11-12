@@ -1,3 +1,5 @@
+import { DAY_SECONDS } from './day.ts';
+
 /**
  * The weather and the seasons.
  * docs/ART_DIRECTION.md ("Weather and seasons") is the source of truth; change both together.
@@ -11,8 +13,9 @@
  * out; it never switches.
  */
 
-/** One season, in real seconds. Four make a year. */
-export const SEASON_SECONDS = 4 * 60 * 60;
+/** A season is 100 of the game's days (80 real hours); four make a year of 400 days, just under two real weeks. */
+export const SEASON_DAYS = 100;
+export const SEASON_SECONDS = SEASON_DAYS * DAY_SECONDS;
 export const SEASON_NAMES = ['spring', 'summer', 'autumn', 'winter'] as const;
 export type SeasonName = (typeof SEASON_NAMES)[number];
 

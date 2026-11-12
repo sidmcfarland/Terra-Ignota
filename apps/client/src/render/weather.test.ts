@@ -6,6 +6,11 @@ import {
 const HOUR = 3_600_000;
 
 describe('the year', () => {
+  it("lasts 400 of the game's days, 100 to a season: 13 real days and 8 hours", () => {
+    expect(SEASON_SECONDS).toBe(100 * 48 * 60);
+    expect(SEASON_SECONDS * 4).toBe((13 * 24 + 8) * 3600);
+  });
+
   it('turns through four seasons and comes round again', () => {
     const year = SEASON_SECONDS * 4000;
     expect(yearAt(0)).toBe(0);

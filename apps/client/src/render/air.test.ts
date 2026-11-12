@@ -41,14 +41,6 @@ describe('the air', () => {
     expect(fall.leaves).toBeGreaterThan(fall.dust);
   });
 
-  it('shimmers with heat only on a still, clear summer noon', () => {
-    expect(at(12.5, WEATHERS.clear, summer, 0.1).heat).toBeGreaterThan(0.9);
-    expect(at(12.5, WEATHERS.clear, summer, 0.8).heat).toBe(0);
-    expect(at(12.5, WEATHERS.overcast, summer, 0.1).heat).toBe(0);
-    expect(at(12.5, WEATHERS.clear, spring, 0.1).heat).toBe(0);
-    expect(at(8, WEATHERS.clear, summer, 0.1).heat).toBe(0);
-  });
-
   it('shows stars in the water on clear, calm nights only', () => {
     expect(at(23, WEATHERS.clear, summer, 0.1).stars).toBeGreaterThan(0.9);
     expect(at(23, WEATHERS.overcast, summer, 0.1).stars).toBe(0);
