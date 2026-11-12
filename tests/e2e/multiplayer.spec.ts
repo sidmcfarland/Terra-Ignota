@@ -400,7 +400,8 @@ test('newcomers catch up from the host, and a returning player brings edits back
 
 /** Tiles the seed peer has stored for a world. */
 async function seedTiles(world: string): Promise<number> {
-  const health = await (await fetch('http://localhost:8788/health')).json();
+  const port = Number(process.env.E2E_SEED_PORT) || 8788; // As in playwright.config.ts.
+  const health = await (await fetch(`http://localhost:${port}/health`)).json();
   return health.worlds?.[world] ?? 0;
 }
 

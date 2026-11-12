@@ -24,6 +24,7 @@ Before pushing, run typecheck, test and e2e.
 - **Movement must go through `step()` in shared.** The client predicts with it and the host validates against the same rules.
 - **Terrain is a pure function of `(seed, x, y)`.** Never send it over the network. Changes to worldgen change every existing world.
 - **Bump `PROTOCOL_VERSION`** in `packages/shared/src/protocol.ts` whenever a wire message changes. The signal server rejects mismatches.
+- **e2e ports:** `E2E_SIGNAL_PORT` (8787), `E2E_SEED_PORT` (8788) and `E2E_CLIENT_PORT` (4173) move the servers Playwright starts, so several checkouts can run e2e on one machine. `E2E_REUSE=0` refuses to reuse a server that is already listening (unset: reuse unless `CI`). Example: `E2E_SIGNAL_PORT=8797 E2E_SEED_PORT=8798 E2E_CLIENT_PORT=4183 E2E_REUSE=0 npm run e2e`.
 - **e2e notes:** Chromium needs `--disable-features=WebRtcHideLocalIpsWithMdns` (set in `playwright.config.ts`) for local peers to connect. Tests load `#render=0` (headless WebGL is slow) and read game state from `window.__ti` (`cfg`, `self`, `session`).
 - **URL hash parameters:** `w` (world), `at=x,y` (spawn spot), `signal` (signaling server override), `render=0`, `debug=1|0` (debug panel; also F3 or the HUD button, remembered in localStorage), `host=0|1` (override "Available to host" for this visit; the HUD toggle saves it).
 - **Deploy:** `.github/workflows/pages.yml` deploys from `main`. Build-time configuration comes from the repo variables `SIGNAL_URL` and `TURN_URL`.
