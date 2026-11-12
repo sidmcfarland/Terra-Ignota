@@ -13,8 +13,12 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
-import { Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
+import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
+import type { Air } from './air.ts';
+import { Motes } from './motes.ts';
+import { Precipitation } from './precip.ts';
 import { Terrain, WATER_Y } from './terrain.ts';
+import { WEATHERS, type Season, type Weather } from './weather.ts';
 import { ZoneLines } from './zones.ts';
 
 export interface Player {
@@ -121,6 +125,9 @@ export class GameView {
   private paper = new Mesh(new PlaneGeometry(1, 1).rotateX(-Math.PI / 2), paperMaterial());
   private terrain: Terrain;
   private zoneLines: ZoneLines;
+  private precip = new Precipitation();
+  private motes = new Motes();
+  private heightAt = (x: number, y: number) => this.terrain.heightAt(x, y);
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -135,6 +142,7 @@ export class GameView {
   private frameTimes = new Float32Array(PERF_FRAMES);
   private cpuTimes = new Float32Array(PERF_FRAMES);
   private perfI = 0;
+  private lampDist = new Float64Array(LAMPS);
 
   constructor(tiles: TileCache) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -150,6 +158,7 @@ export class GameView {
     this.paper.renderOrder = 1;
     this.paper.frustumCulled = false;
     this.scene.add(this.paper);
+    this.scene.add(this.precip.mesh, this.motes.mesh);
 
     this.labels.className = 'labels3d';
     document.body.appendChild(this.labels);
@@ -167,6 +176,50 @@ export class GameView {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     // Screen-up is the camera's ground-projected forward: (-sin, -cos) in world x/y.
     return { x: c * d.x + s * d.y, y: -s * d.x + c * d.y };
+  }
+
+  /** The hour of the day being shown, 0–24. */
+  get hour(): number {
+    return this.look.hour;
+  }
+
+  /** Pin the time of day (hours, 0–24), or pass null to follow the shared clock again. */
+  setHour(hour: number | null) {
+    this.look.fixedHour = hour;
+  }
+
+  /** The wind being shown: the direction it blows toward and its strength, 0–1. */
+  get wind(): { x: number; y: number; strength: number } {
+    return this.look.wind;
+  }
+
+  /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
+  setWind(strength: number | null) {
+    this.look.fixedWind = strength;
+  }
+
+  /** What hangs in the air right now: dust, leaves, fireflies, heat, stars, dawn mist (each 0–1). */
+  get air(): Air {
+    return this.look.air;
+  }
+
+  /** The weather and the season being shown. */
+  get weather(): Weather {
+    return this.look.weather;
+  }
+
+  get season(): Season {
+    return this.look.season;
+  }
+
+  /** Hold the weather (a name from WEATHERS, such as 'rain'), or pass null to follow the shared clock again. */
+  setWeather(name: string | null) {
+    this.look.fixedWeather = name !== null && Object.hasOwn(WEATHERS, name) ? WEATHERS[name] : null;
+  }
+
+  /** Hold the point in the year (0 spring, 1 summer, 2 autumn, 3 winter, and between), or pass null to follow the clock. */
+  setSeason(year: number | null) {
+    this.look.fixedYear = year;
   }
 
   /** Draw zone borders and handoff margins on the ground (debug mode). */
@@ -213,13 +266,28 @@ export class GameView {
     this.paper.position.set(target.x, PAPER_Y, target.z);
     this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
+    this.precip.update(this.look.weather, this.look.wind, groundY, radius, dt);
+    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.heightAt, WATER_Y);
 
     const seen = new Set<string>();
     const v = new Vector3();
+    // Each explorer carries a lantern. Your own always shows; the rest go to whoever is nearest.
+    const lamps = U.uLamps.value, near = this.lampDist.fill(Infinity);
+    for (const l of lamps) l.w = 0;
     for (const p of players) {
       const a = this.avatar(p);
       const gy = Math.max(this.terrain.heightAt(p.x, p.y), WATER_Y - 0.25);
       a.mesh.position.set(p.x, gy, p.y);
+      let slot = 0;
+      if (!p.self) {
+        // Take the slot held by the farthest explorer so far, if this one is nearer.
+        slot = 1;
+        for (let i = 2; i < LAMPS; i++) if (near[i] > near[slot]) slot = i;
+        const d = (p.x - self.x) ** 2 + (p.y - self.y) ** 2;
+        if (d < near[slot]) near[slot] = d;
+        else slot = -1;
+      }
+      if (slot >= 0) lamps[slot].set(p.x, gy + LAMP_HEIGHT, p.y, 1);
       this.ground(a, p.x, p.y);
       v.set(p.x, gy + 1.25, p.y).project(this.camera);
       a.label.style.transform = `translate(${((v.x + 1) / 2) * w}px, ${((1 - v.y) / 2) * h}px) translate(-50%, -100%)`;
@@ -313,7 +381,8 @@ export class GameView {
     const t = this.terrain, bake = U.uSunBake.value, sun = U.uSunDir.value;
     t.shadeAt(x, y, a.shade);
     const horizon = a.shade.y + (a.shade.z - a.shade.y) * bake.y;
-    const lit = Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
+    // No direct light (shade, or the key light below the horizon) leaves only a soft dark patch.
+    const lit = this.look.key * Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
     a.strength.x = 0.2 + 0.3 * lit;
 
     const h = t.heightAt(x, y), e = 0.3;

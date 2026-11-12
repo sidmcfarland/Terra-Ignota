@@ -1,6 +1,7 @@
 import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type TileEdits, type ZoneId } from '@terra/shared';
 import type { Session } from './net/session.ts';
 import type { PerfStats } from './render/view.ts';
+import type { Season, Weather } from './render/weather.ts';
 
 const STORE_KEY = 'ti.debug';
 
@@ -16,6 +17,13 @@ export interface DebugState {
   author: string;
   /** Renderer cost, or null when not drawing (`#render=0`). */
   perf: PerfStats | null;
+  /** The hour of the day being drawn (0–24), or null when not drawing. */
+  hour: number | null;
+  /** The strength of the wind being drawn (0–1), or null when not drawing. */
+  wind: number | null;
+  /** The weather and season being drawn, or null when not drawing. */
+  weather: Weather | null;
+  season: Season | null;
 }
 
 /**
@@ -76,15 +84,26 @@ const label = (seed: number, z: ZoneId) => `${z}  ${zoneName(seed, z)}`;
 const short = (id: string) => id.slice(0, 8);
 const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)}ms`);
 
+/** The amounts that are not zero, such as "cloud 0.80 rain 0.35". */
+function amounts(of: object | null): string {
+  const parts = Object.entries(of ?? {}).filter(([, v]) => v > 0.005).map(([k, v]) => `${k} ${(v as number).toFixed(2)}`);
+  return parts.join(' ') || 'clear';
+}
+
 /** Renderer cost against the budgets in docs/ART_DIRECTION.md (12 ms, 150 draw calls, 300k triangles). */
-function perfLines({ perf }: DebugState): string[] {
+function perfLines({ perf, hour, wind, weather, season }: DebugState): string[] {
   if (!perf) return [];
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const clock = hour === null ? '' : `${String(Math.floor(hour)).padStart(2, '0')}:${String(Math.floor((hour % 1) * 60)).padStart(2, '0')}`;
   return [
     `FRAME  ${perf.frameMs.toFixed(1)}ms avg  ·  ${perf.frameP95.toFixed(1)}ms p95  ·  ${Math.round(1000 / (perf.frameMs || 1))} fps`,
     `       cpu ${perf.cpuMs.toFixed(1)}ms avg, ${perf.cpuMax.toFixed(1)}ms worst  ·  pixel ratio ${perf.pixelRatio}`,
     `DRAW   ${perf.drawCalls} calls  ·  ${k(perf.triangles)} triangles  ·  ${perf.geometries} geometries  ·  ${perf.textures} textures`,
     `CHUNKS ${perf.chunkBuilds} built  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms`,
+    `TIME   ${clock}  ·  #time=dawn|morning|noon|afternoon|golden|sunset|dusk|night or an hour holds it`,
+    `WIND   ${(wind ?? 0).toFixed(2)}  ·  #wind=0..1 holds it`,
+    `SKY    ${amounts(weather)}  ·  #weather=clear|broken|overcast|rain|storm|fog|snow holds it`,
+    `YEAR   ${amounts(season)}  ·  #season=spring|summer|autumn|winter holds it`,
     '',
   ];
 }
