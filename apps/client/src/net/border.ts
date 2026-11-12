@@ -1,14 +1,18 @@
 import {
-  BORDER_VIEW, ZONE_TILES, parseZone,
-  type NeighbourHost, type PlayerInfo, type SignalData, type TileOp, type ZoneId,
+  BORDER_VIEW, HOST_LINK_LIMITS, LinkGuard, distToZone,
+  type NeighbourHost, type PlayerEntry, type PlayerInfo, type PlayerPos, type SignalData, type TileOp, type ZoneId,
 } from '@terra/shared';
 import { Peer } from './peer.ts';
 
 /** Redial a dropped border link after this long, if the neighbour is still listed. */
 const REDIAL_MS = 2000;
+/** Ops per 'edits' message, to keep data-channel messages small. */
+const OPS_PER_MESSAGE = 200;
 
+/** A player this host is the authority for, with the number its snapshots use for it. */
 export interface LocalPlayer {
   info: PlayerInfo;
+  n: number;
   x: number;
   y: number;
 }
@@ -19,8 +23,8 @@ interface Link {
   zone: ZoneId | null;
   peer: Peer;
   initiator: boolean;
-  /** Player infos the neighbour last told us about. */
-  roster: Map<string, PlayerInfo>;
+  /** The neighbour's players by the neighbour's number for them, as it last told us. */
+  roster: Map<number, PlayerInfo>;
   /** Players it last said were near our zone, and when. */
   visible: number;
   edgeT: number;
@@ -39,6 +43,8 @@ export interface BorderDebug {
  * A zone host's links to the hosts of neighbouring zones. Each pair of
  * neighbours shares one link (the lower peer id dials), over which each side
  * sends the players it hosts that are within BORDER_VIEW of the other's zone.
+ * That stream is per zone; the receiving host then shows each of its players
+ * only the ones within that player's own view.
  */
 export class BorderLinks {
   private links = new Map<string, Link>();
@@ -46,20 +52,20 @@ export class BorderLinks {
   private wanted = new Map<string, ZoneId>();
   private redial = new Map<string, ReturnType<typeof setTimeout>>();
   private rosterKey = '';
-  private roster: PlayerInfo[] = [];
+  private roster: PlayerEntry[] = [];
 
   private readonly selfId: string;
   private readonly iceServers: RTCIceServer[];
   private readonly sendSignal: (to: string, data: SignalData) => void;
   private readonly onPlayer: (info: PlayerInfo, x: number, y: number) => void;
-  private readonly onOps: (ops: unknown) => void;
+  private readonly onOps: (ops: unknown, from: string) => void;
 
   constructor(
     selfId: string,
     iceServers: RTCIceServer[],
     sendSignal: (to: string, data: SignalData) => void,
     onPlayer: (info: PlayerInfo, x: number, y: number) => void,
-    onOps: (ops: unknown) => void,
+    onOps: (ops: unknown, from: string) => void,
   ) {
     this.selfId = selfId;
     this.iceServers = iceServers;
@@ -68,13 +74,13 @@ export class BorderLinks {
     this.onOps = onOps;
   }
 
-  /** Pass edits to each neighbouring host whose zone they're near (within BORDER_VIEW). */
-  sendOps(ops: TileOp[]) {
+  /** Pass edits to each neighbouring host whose zone they're near (within BORDER_VIEW), except the one they came from. */
+  sendOps(ops: TileOp[], except: string | null = null) {
     for (const link of this.links.values()) {
-      if (!link.zone || !link.peer.isOpen) continue;
-      const [zx, zy] = parseZone(link.zone);
-      const near = ops.filter((op) => distToZone(op.x + 0.5, op.y + 0.5, zx, zy) <= BORDER_VIEW);
-      for (let i = 0; i < near.length; i += 200) link.peer.sendR({ t: 'edits', ops: near.slice(i, i + 200) });
+      if (!link.zone || !link.peer.isOpen || link.hostId === except) continue;
+      const zone = link.zone;
+      const near = ops.filter((op) => distToZone(op.x + 0.5, op.y + 0.5, zone) <= BORDER_VIEW);
+      for (let i = 0; i < near.length; i += OPS_PER_MESSAGE) link.peer.sendR({ t: 'edits', ops: near.slice(i, i + OPS_PER_MESSAGE) });
     }
   }
 
@@ -98,18 +104,17 @@ export class BorderLinks {
 
   /** Each host tick: share our players near each neighbour's zone. */
   tick(players: LocalPlayer[]) {
-    const key = players.map((p) => `${p.info.id}:${p.info.name}:${p.info.hue}`).join('|');
+    const key = players.map((p) => `${p.n}:${p.info.id}:${p.info.name}:${p.info.hue}`).join('|');
     if (key !== this.rosterKey) {
       this.rosterKey = key;
-      this.roster = players.map((p) => p.info);
+      this.roster = players.map((p) => ({ ...p.info, n: p.n }));
       for (const link of this.links.values()) link.peer.sendR({ t: 'border', players: this.roster });
     }
     for (const link of this.links.values()) {
       if (!link.zone || !link.peer.isOpen) continue;
-      const [zx, zy] = parseZone(link.zone);
-      const p: Array<[string, number, number]> = [];
+      const p: PlayerPos[] = [];
       for (const pl of players) {
-        if (distToZone(pl.x, pl.y, zx, zy) <= BORDER_VIEW) p.push([pl.info.id, round(pl.x), round(pl.y)]);
+        if (distToZone(pl.x, pl.y, link.zone) <= BORDER_VIEW) p.push([pl.n, pl.x, pl.y]);
       }
       link.peer.sendU({ t: 'edge', p });
     }
@@ -153,22 +158,22 @@ export class BorderLinks {
         }
       },
       onReliable: (m) => {
-        if (m.t === 'edits') return this.onOps(m.ops);
-        if (m.t !== 'border') return;
-        link.roster = new Map(m.players.map((p) => [p.id, sanitize(p)]));
+        if (m.t === 'edits') return this.onOps(m.ops, id);
+        if (m.t !== 'border' || !Array.isArray(m.players)) return;
+        link.roster = new Map(m.players.slice(0, 4096).map((p) => [Number(p?.n), sanitize(p)]));
       },
       onUnreliable: (m) => {
         if (m.t !== 'edge') return;
         link.edgeT = performance.now();
         link.visible = 0;
-        for (const [pid, x, y] of m.p) {
-          const info = link.roster.get(pid);
-          if (!info || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        for (const [n, x, y] of m.p) {
+          const info = link.roster.get(n);
+          if (!info) continue;
           link.visible++;
           this.onPlayer(info, x, y);
         }
       },
-    });
+    }, new LinkGuard(HOST_LINK_LIMITS));
     const link: Link = {
       hostId: id, zone: this.wanted.get(id) ?? null, peer, initiator, roster: new Map(), visible: 0, edgeT: 0,
     };
@@ -185,16 +190,7 @@ export class BorderLinks {
   }
 }
 
-/** Distance from (x, y) to the nearest point of zone (zx, zy); 0 inside it. */
-function distToZone(x: number, y: number, zx: number, zy: number): number {
-  const x0 = zx * ZONE_TILES, y0 = zy * ZONE_TILES;
-  const dx = Math.max(x0 - x, 0, x - (x0 + ZONE_TILES));
-  const dy = Math.max(y0 - y, 0, y - (y0 + ZONE_TILES));
-  return Math.hypot(dx, dy);
-}
-
-const sanitize = (p: PlayerInfo): PlayerInfo => ({
-  id: String(p.id), name: String(p.name).slice(0, 32), hue: Number(p.hue) % 360 || 0,
+/** A player's info as received from another peer, coerced into shape. */
+export const sanitize = (p: PlayerInfo): PlayerInfo => ({
+  id: String(p?.id).slice(0, 64), name: String(p?.name).slice(0, 32), hue: Number(p?.hue) % 360 || 0,
 });
-
-const round = (v: number) => Math.round(v * 100) / 100;

@@ -1,18 +1,23 @@
 import {
-  EDITS_PER_SEC, EDIT_REACH, PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ,
-  canHost, hostScore, isWalkable, isWellFormed, verifyOp, zoneChunkKeys,
-  type FromSignal, type HostMetrics, type Identity, type LinkKind, type PlayerInfo, type Reliable, type TileEdits, type TileLookup,
-  type TileOp, type Unreliable, type ZoneId,
+  BORDER_VIEW, CHUNK, CLIENT_LIMITS, EDITS_PER_SEC, EDIT_REACH, HOST_LINK_LIMITS, LinkGuard, MAX_VIEW_RADIUS, MIN_VIEW_RADIUS,
+  PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, SYNC_ANSWER_MS, SYNC_CHUNKS_AT_ONCE, SYNC_OPS_BURST, SYNC_OPS_PER_SEC,
+  TICK_HZ, TokenBucket, VIEW_HYSTERESIS, VIEW_RADIUS, ZONE_MARGIN, ZONE_SLACK,
+  canHost, chunkKeyOf, clampToZone, distToZone, hostScore, isWalkable, isWellFormed, opWins, verifyOp, zoneChunkKeys,
+  type FromSignal, type HostMetrics, type Identity, type LinkKind, type PlayerEntry, type PlayerInfo, type PlayerPos,
+  type Reliable, type TileEdits, type TileLookup, type TileOp, type Unreliable, type ZoneId,
 } from '@terra/shared';
-import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
+import { BorderLinks, sanitize, type BorderDebug, type LocalPlayer } from './border.ts';
 import { Peer } from './peer.ts';
 import { SignalClient } from './signal.ts';
+import { netStats } from './stats.ts';
 
 /** How far behind real time remote players are rendered, for smoothness. */
 const INTERP_DELAY_MS = 100;
 const BUFFER_MS = 1000;
 /** A neighbouring zone's player disappears after this long without a position. */
 const FOREIGN_TTL_MS = 1000;
+/** A client forgets a player its host has stopped sending (one that left its view) after this long. */
+const VIEW_TTL_MS = 500;
 const TICK_MS = 1000 / TICK_HZ;
 /** A host tick counts as late when it fires this much after the previous one. */
 const LATE_TICK_MS = 1.5 * TICK_MS;
@@ -26,8 +31,11 @@ const STATE_EVERY_TICKS = 4;
 const HOST_SILENCE_MS = 1000;
 /** A successor only uses backup state younger than this. */
 const STATE_MAX_AGE_MS = 5000;
-/** Ops per 'edits' message, to keep data-channel messages small. */
+/** Ops per 'edits' message sent, to keep data-channel messages small; and the most read from one received. */
 const OPS_PER_MESSAGE = 200;
+const MAX_OPS_PER_MESSAGE = 1024;
+/** A host holds back catch-up chunks for a peer while this much is still queued to it. */
+const SYNC_BACKLOG_BYTES = 256 * 1024;
 
 /** Zone state streamed from the host to its backups. */
 interface BackupState {
@@ -61,19 +69,46 @@ export interface SessionStats {
   lateTicks: number;
   /** Times this zone's host changed while we stayed in the zone (a failover or a hand-over). */
   hostChanges: number;
+  /** As a host: edits refused before verification (out of reach, over a rate limit, not asked for, or outside the zone's range). */
+  opsRefused: number;
 }
 
 interface Sample { t: number; x: number; y: number }
 
+/** A player this peer currently sees. */
 export interface Remote {
   info: PlayerInfo;
   samples: Sample[];
 }
 
+/**
+ * A host's side of one peer's catch-up (a client's or a seed's). The host sets
+ * the pace: it sends what the peer lacks a chunk at a time, asks for a few
+ * chunks at a time, and accepts edits only for chunks it has asked for.
+ */
+interface SyncState {
+  /** The peer's digests have been handled; it gets one catch-up per link. */
+  started: boolean;
+  /** Chunks of ours the peer lacks, still to send. */
+  send: string[];
+  /** Chunks where the peer holds edits we may lack, not asked for yet, with how many edits it says each has. */
+  want: Array<{ key: string; count: number }>;
+  /** Chunks on request: how many edits may still arrive for each, and when it was asked. */
+  asked: Map<string, { left: number; t: number }>;
+  /** Edits this peer's catch-up may still bring. */
+  budget: TokenBucket;
+}
+
+const newSync = (): SyncState => ({
+  started: false, send: [], want: [], asked: new Map(), budget: new TokenBucket(SYNC_OPS_PER_SEC, SYNC_OPS_BURST),
+});
+
 /** Server-side record the host keeps for each connected client. */
 interface HostedClient {
   peer: Peer;
   info?: PlayerInfo;
+  /** The number this host's snapshots use for the client. Set with info. */
+  n: number;
   x: number;
   y: number;
   lastSeq: number;
@@ -85,9 +120,30 @@ interface HostedClient {
   rttMs: number | null;
   /** The client's public key (from hello): the only author whose edits it may send. */
   pub?: string;
-  /** Edit rate limiting: edits allowed this second, and when the second started. */
-  editBudget: number;
-  editT: number;
+  /** New edits the client may still send this second. */
+  editBudget: TokenBucket;
+  /** How far the client sees, in tiles (its request, held within bounds). */
+  view: number;
+  /** Players within the client's view as of the last tick, by number. */
+  inView: Set<number>;
+  /** Players the client has been told about (their info), by number. */
+  met: Set<number>;
+  sync: SyncState;
+}
+
+/** A neighbouring zone's player near this zone, as relayed by its host. */
+interface Foreign {
+  info: PlayerInfo;
+  n: number;
+  x: number;
+  y: number;
+  t: number;
+}
+
+/** A seed peer linked to this host. */
+interface SeedLink {
+  peer: Peer;
+  sync: SyncState;
 }
 
 /** What a host knows about one of its clients, for the debug panel. */
@@ -102,6 +158,8 @@ export interface ClientDebug {
   reports: number;
   corrections: number;
   rttMs: number | null;
+  /** Players the host is currently sending this client. */
+  sees: number;
 }
 
 /** This peer's standing in host election, for the debug panel. */
@@ -149,12 +207,15 @@ export interface SessionOptions {
   iceServers: RTCIceServer[];
   tiles: TileLookup;
   getSelf(): { x: number; y: number };
+  /** How far this player can see other players, in tiles (what the screen shows). Default VIEW_RADIUS. */
+  getView?(): number;
 }
 
 /**
  * Zone session. The zone host (chosen by the directory) runs the
  * authoritative tick and relays state in a star topology; everyone else
- * connects only to the host.
+ * connects only to the host. The host sends each client only the players
+ * within that client's view.
  */
 export class Session {
   role: Role = 'connecting';
@@ -163,8 +224,11 @@ export class Session {
   zone: ZoneId;
   /** The zone's backups as the directory last announced them, best first. */
   backups: string[] = [];
+  /** The players this peer currently sees: those within its view, in its zone or across a border. */
   readonly remotes = new Map<string, Remote>();
-  readonly stats: SessionStats = { snaps: 0, snapPlayers: 0, ticks: 0, tickMs: 0, tickMaxMs: 0, lateTicks: 0, hostChanges: 0 };
+  readonly stats: SessionStats = {
+    snaps: 0, snapPlayers: 0, ticks: 0, tickMs: 0, tickMaxMs: 0, lateTicks: 0, hostChanges: 0, opsRefused: 0,
+  };
 
   private signal: SignalClient;
   // Client-side state
@@ -173,16 +237,28 @@ export class Session {
   private snapTick = 0;
   private snapT = 0;
   private lastDownReport = 0;
+  /** Players the host has announced, by the host's number for them. */
+  private met = new Map<number, PlayerInfo>();
+  private hostInfo: PlayerInfo | null = null;
+  /** Players in the zone, as the host's last snapshot counted them. */
+  private zonePlayers = 0;
+  /** Chunks already sent to the host in answer to its catch-up requests. */
+  private answered = new Set<string>();
   /** Latest zone state from the host, when this peer is one of its backups. */
   private backupState: BackupState | null = null;
   // Host-side state
   private clients = new Map<string, HostedClient>();
   private borders: BorderLinks;
-  /** Players from neighbouring zones, relayed by their hosts (ids into remotes). */
-  private foreign = new Set<string>();
-  private rosterDirty = false;
+  /** Players from neighbouring zones, relayed by their hosts, by peer id. */
+  private foreign = new Map<string, Foreign>();
+  /** Numbers for snapshots: the host is 0, everyone else gets the next one. Never reused while hosting. */
+  private nextN = 1;
+  /** Players within the host player's own view as of the last tick, by number. */
+  private hostView = new Set<number>();
+  /** Edits each neighbouring host may still pass us. */
+  private borderBudgets = new Map<string, TokenBucket>();
   /** Seed peers replicating this zone's edits, by peer id. */
-  private seedLinks = new Map<string, Peer>();
+  private seedLinks = new Map<string, SeedLink>();
   /** After taking over: where each player was in the old host's last state, to validate their reconnect. */
   private inherited: BackupState | null = null;
   private tick = 0;
@@ -208,7 +284,7 @@ export class Session {
       o.iceServers,
       (to, data) => this.signal.send({ t: 'signal', to, link: 'border', data }),
       (info, x, y) => this.onForeign(info, x, y),
-      (ops) => void this.receiveOps(ops, null),
+      (ops, from) => this.onBorderOps(ops, from),
     );
     this.signal = new SignalClient(
       o.signalUrl,
@@ -224,8 +300,19 @@ export class Session {
     o.profile.onChange = () => this.sendStatus();
   }
 
+  /** Players in this zone, counting this one. */
   get playerCount(): number {
-    return this.remotes.size + 1;
+    if (this.role === 'host') {
+      let n = 1;
+      for (const c of this.clients.values()) if (c.info) n++;
+      return n;
+    }
+    return this.zonePlayers || this.remotes.size + 1;
+  }
+
+  /** How far this peer sees other players, in tiles. */
+  get viewRadius(): number {
+    return clampView(this.o.getView?.() ?? VIEW_RADIUS);
   }
 
   /**
@@ -287,7 +374,8 @@ export class Session {
     this.hostPeer = null;
     this.clients.clear();
     this.remotes.clear();
-    this.foreign.clear();
+    this.clearHostView();
+    this.clearClientView();
     this.borders.close();
     this.closeSeeds();
     this.snapT = 0;
@@ -296,6 +384,21 @@ export class Session {
     this.inherited = null;
     hostPeer?.close();
     for (const c of clients) c.peer.close();
+  }
+
+  /** Forget what a host tracked about who is where. */
+  private clearHostView() {
+    this.foreign.clear();
+    this.hostView.clear();
+    this.borderBudgets.clear();
+  }
+
+  /** Forget what a client learned from its host. */
+  private clearClientView() {
+    this.met.clear();
+    this.hostInfo = null;
+    this.zonePlayers = 0;
+    this.answered.clear();
   }
 
   // ---------------- edits ----------------
@@ -315,30 +418,36 @@ export class Session {
     return zoneChunkKeys(this.zone);
   }
 
-  private chunkOps(keys: string[]): TileOp[] {
-    return keys.flatMap((k) => this.o.edits.chunkOps(k));
-  }
-
-  /** Verify untrusted ops, merge them, persist what changed, and spread it if hosting. */
+  /**
+   * Verify untrusted ops, merge them, persist what changed, and spread it if
+   * hosting. Ops that wouldn't change the replica (ones it already has, or
+   * that lose to what it has) are dropped before the signature check, which is
+   * the costly part.
+   */
   private async receiveOps(ops: unknown, from: string | null): Promise<TileOp[]> {
     if (!Array.isArray(ops)) return [];
-    const valid = (await Promise.all(
-      ops.slice(0, 5000).map(async (op) => (isWellFormed(op) && (await verifyOp(this.o.world, op)) ? op : null)),
-    )).filter((op): op is TileOp => op !== null);
+    const news = ops.slice(0, MAX_OPS_PER_MESSAGE).filter((op): op is TileOp => {
+      if (!isWellFormed(op)) return false;
+      const cur = this.o.edits.get(op.x, op.y);
+      return !cur || opWins(op, cur);
+    });
+    if (!news.length) return [];
+    const valid = (await Promise.all(news.map(async (op) => ((await verifyOp(this.o.world, op)) ? op : null))))
+      .filter((op): op is TileOp => op !== null);
     const changed = valid.filter((op) => this.o.edits.merge(op));
     for (const op of changed) this.o.onMerged(op);
     if (changed.length && this.role === 'host') this.spread(changed, from);
     return changed;
   }
 
-  /** Host: send ops to every client and seed (except the one they came from) and to neighbouring hosts. */
+  /** Host: send ops to every client, seed and neighbouring host, except the one they came from. */
   private spread(ops: TileOp[], except: string | null) {
     for (let i = 0; i < ops.length; i += OPS_PER_MESSAGE) {
       const msg: Reliable = { t: 'edits', ops: ops.slice(i, i + OPS_PER_MESSAGE) };
       for (const [id, c] of this.clients) if (c.info && id !== except) c.peer.sendR(msg);
-      for (const [id, peer] of this.seedLinks) if (id !== except) peer.sendR(msg);
+      for (const [id, s] of this.seedLinks) if (id !== except) s.peer.sendR(msg);
     }
-    this.borders.sendOps(ops);
+    this.borders.sendOps(ops, except);
   }
 
   private sendOps(peer: Peer, ops: TileOp[]) {
@@ -349,56 +458,109 @@ export class Session {
   private async hostOnEdit(id: string, op: unknown) {
     const c = this.clients.get(id);
     if (!c?.info || !c.pub || !isWellFormed(op) || op.author !== c.pub) return;
-    const now = performance.now();
-    if (now - c.editT > 1000) (c.editT = now), (c.editBudget = EDITS_PER_SEC);
-    if (c.editBudget-- <= 0) return;
-    if (Math.hypot(op.x + 0.5 - c.x, op.y + 0.5 - c.y) > EDIT_REACH + 1) return;
+    if (!c.editBudget.take(performance.now()) || Math.hypot(op.x + 0.5 - c.x, op.y + 0.5 - c.y) > EDIT_REACH + 1) {
+      this.stats.opsRefused++;
+      return;
+    }
     await this.receiveOps([op], id);
   }
 
-  /** Host: a client's digests. */
-  private hostOnSync(id: string, d: unknown) {
-    const c = this.clients.get(id);
-    if (c) this.syncWith(c.peer, d);
+  /**
+   * Host: a neighbouring host passes on edits near our zone. Anything further
+   * away isn't ours to keep, and each neighbour has a budget.
+   */
+  private onBorderOps(ops: unknown, from: string) {
+    if (this.role !== 'host' || !Array.isArray(ops)) return;
+    const near = ops.slice(0, MAX_OPS_PER_MESSAGE)
+      .filter((op) => isWellFormed(op) && distToZone(op.x + 0.5, op.y + 0.5, this.zone) <= BORDER_VIEW);
+    let budget = this.borderBudgets.get(from);
+    if (!budget) this.borderBudgets.set(from, (budget = new TokenBucket(SYNC_OPS_PER_SEC, SYNC_OPS_BURST)));
+    this.stats.opsRefused += ops.length - near.length;
+    if (!near.length) return;
+    if (!budget.take(performance.now(), near.length)) {
+      this.stats.opsRefused += near.length;
+      return;
+    }
+    void this.receiveOps(near, from);
   }
 
-  /** Host: compare a peer's digests with ours. Send it what it lacks; ask for what we lack. */
-  private syncWith(peer: Peer, d: unknown) {
-    if (!d || typeof d !== 'object') return;
+  /**
+   * Host: a peer's digests (a client's or a seed's). Queue the chunks it
+   * lacks to send, and the chunks where it has edits we may lack to ask for.
+   */
+  private startSync(peer: Peer, s: SyncState, d: unknown) {
+    if (s.started || !d || typeof d !== 'object') return;
+    s.started = true;
     const theirs = d as Record<string, unknown>;
-    const send: string[] = [], want: string[] = [];
     for (const key of this.zoneChunks()) {
       const ours = this.o.edits.digest(key);
       const them = typeof theirs[key] === 'string' ? (theirs[key] as string) : '';
       if (ours === them) continue;
-      if (ours) send.push(key);
-      if (them) want.push(key);
+      if (ours) s.send.push(key);
+      // A digest starts with the chunk's edit count. A chunk has at most one edit per tile.
+      if (them) s.want.push({ key, count: Math.min(CHUNK * CHUNK, Math.max(1, parseInt(them, 10) || 1)) });
     }
-    this.sendOps(peer, this.chunkOps(send));
-    if (want.length) peer.sendR({ t: 'syncWant', chunks: want });
+    this.pumpSync(peer, s, performance.now());
+  }
+
+  /** Host: move a peer's catch-up along. Called when it starts and on every tick while there's work. */
+  private pumpSync(peer: Peer, s: SyncState, now: number) {
+    while (s.send.length && peer.backlog < SYNC_BACKLOG_BYTES) this.sendOps(peer, this.o.edits.chunkOps(s.send.shift()!));
+    for (const [key, a] of s.asked) if (now - a.t > SYNC_ANSWER_MS) s.asked.delete(key);
+    const ask: string[] = [];
+    while (s.want.length && s.asked.size < SYNC_CHUNKS_AT_ONCE && s.budget.take(now, s.want[0].count)) {
+      const w = s.want.shift()!;
+      s.asked.set(w.key, { left: w.count, t: now });
+      ask.push(w.key);
+    }
+    if (ask.length) peer.sendR({ t: 'syncWant', chunks: ask });
+  }
+
+  /**
+   * Host: edits a syncing peer sent. Only edits in chunks the host asked that
+   * peer for are taken, and no more per chunk than the peer said it had, so
+   * catch-up can't be used to push edits at will. (What it can't do is tell an
+   * old edit from a new one: see PLAN.md.)
+   */
+  private takeSynced(s: SyncState, ops: unknown): TileOp[] {
+    if (!Array.isArray(ops)) return [];
+    const taken: TileOp[] = [];
+    for (const op of ops.slice(0, MAX_OPS_PER_MESSAGE)) {
+      if (!isWellFormed(op)) continue;
+      const key = chunkKeyOf(op.x, op.y);
+      const a = s.asked.get(key);
+      if (!a) {
+        this.stats.opsRefused++;
+        continue;
+      }
+      if (--a.left <= 0) s.asked.delete(key);
+      taken.push(op);
+    }
+    return taken;
   }
 
   /** Host: a seed peer is dialling in. It's a replica of the zone's edits, not a player. */
   private acceptSeed(id: string) {
-    this.seedLinks.get(id)?.close();
+    this.seedLinks.get(id)?.peer.close();
+    const sync = newSync();
     const peer: Peer = new Peer(id, false, this.o.iceServers, this.sendSignal(id, 'seed'), {
       onOpen: () => {},
       onClose: () => {
-        if (this.seedLinks.get(id) === peer) this.seedLinks.delete(id);
+        if (this.seedLinks.get(id)?.peer === peer) this.seedLinks.delete(id);
       },
       onReliable: (m) => {
-        if (m.t === 'sync') this.syncWith(peer, m.d);
-        else if (m.t === 'edits') void this.receiveOps(m.ops, id);
+        if (m.t === 'sync') this.startSync(peer, sync, m.d);
+        else if (m.t === 'edits') void this.receiveOps(this.takeSynced(sync, m.ops), id);
       },
       onUnreliable: () => {},
-    });
-    this.seedLinks.set(id, peer);
+    }, new LinkGuard(HOST_LINK_LIMITS));
+    this.seedLinks.set(id, { peer, sync });
   }
 
   private closeSeeds() {
     const links = [...this.seedLinks.values()];
     this.seedLinks.clear();
-    for (const peer of links) peer.close();
+    for (const s of links) s.peer.close();
   }
 
   /** Client: right after connecting, tell the host what we hold for this zone. */
@@ -434,12 +596,12 @@ export class Session {
         if (m.link === 'seed') {
           if (this.role !== 'host') break;
           if (m.data.kind === 'offer') this.acceptSeed(m.from);
-          void this.seedLinks.get(m.from)?.handleSignal(m.data);
+          void this.seedLinks.get(m.from)?.peer.handleSignal(m.data);
           break;
         }
         if (this.role === 'host') {
           if (m.data.kind === 'offer') this.acceptClient(m.from);
-          this.clients.get(m.from)?.peer.handleSignal(m.data);
+          void this.clients.get(m.from)?.peer.handleSignal(m.data);
         } else if (this.hostPeer?.remoteId === m.from) {
           void this.hostPeer.handleSignal(m.data);
         }
@@ -479,7 +641,9 @@ export class Session {
     this.role = 'host';
     this.hostId = this.o.peerId;
     this.remotes.clear();
-    this.foreign.clear();
+    this.clearClientView();
+    this.clearHostView();
+    this.nextN = 1;
     this.late = [];
     this.lastTickT = 0;
     this.o.profile.setHosting(true);
@@ -495,16 +659,18 @@ export class Session {
     const peer: Peer = new Peer(id, false, this.o.iceServers, this.sendSignal(id), {
       onOpen: () => {},
       onClose: () => {
-        if (this.clients.get(id)?.peer !== peer) return;
+        const c = this.clients.get(id);
+        if (c?.peer !== peer) return;
         this.clients.delete(id);
         this.remotes.delete(id);
-        this.broadcastRoster();
+        if (c.info) this.forget(c.n);
       },
       onReliable: (m) => this.hostOnReliable(id, m),
       onUnreliable: (m) => this.hostOnUnreliable(id, m),
-    });
+    }, new LinkGuard(CLIENT_LIMITS));
     this.clients.set(id, {
-      peer, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0, rttMs: null, editBudget: EDITS_PER_SEC, editT: 0,
+      peer, n: -1, x: 0, y: 0, lastSeq: -1, lastT: 0, reports: 0, corrections: 0, rttMs: null,
+      editBudget: new TokenBucket(EDITS_PER_SEC, EDITS_PER_SEC), view: VIEW_RADIUS, inView: new Set(), met: new Set(), sync: newSync(),
     });
   }
 
@@ -512,13 +678,16 @@ export class Session {
     const c = this.clients.get(id);
     if (!c) return;
     if (m.t === 'edit') return void this.hostOnEdit(id, m.op);
-    if (m.t === 'edits') return void (c.info && this.receiveOps(m.ops, id));
-    if (m.t === 'sync') return this.hostOnSync(id, m.d);
+    if (m.t === 'edits') return void (c.info && this.receiveOps(this.takeSynced(c.sync, m.ops), id));
+    if (m.t === 'sync') return void (c.info && this.startSync(c.peer, c.sync, m.d));
     if (m.t === 'hello' && !c.info) {
-      c.info = { id, name: String(m.info.name).slice(0, 32), hue: Number(m.info.hue) % 360 || 0 };
+      c.info = { ...sanitize(m.info), id };
+      c.n = this.nextN++;
       if (typeof m.pub === 'string' && m.pub.length <= 64) c.pub = m.pub;
-      c.x = Number(m.x) || 0;
-      c.y = Number(m.y) || 0;
+      // A client belongs to this zone only within its margin: hold a claimed position to that.
+      const at = clampToZone(Number(m.x) || 0, Number(m.y) || 0, this.zone, ZONE_MARGIN);
+      c.x = at.x;
+      c.y = at.y;
       c.lastT = performance.now();
       // Reconnecting after a takeover: hold the claimed position to what the old host last validated.
       const known = this.inherited?.players.get(id);
@@ -532,21 +701,27 @@ export class Session {
         }
         this.inherited.players.delete(id);
       }
-      this.foreign.delete(id); // Now hosted here; no longer relayed by a neighbour.
-      this.remotes.set(id, { info: c.info, samples: [{ t: c.lastT, x: c.x, y: c.y }] });
-      this.broadcastRoster();
+      // Now hosted here; no longer relayed by a neighbour.
+      const was = this.foreign.get(id);
+      if (was) {
+        this.foreign.delete(id);
+        this.forget(was.n);
+      }
+      // The client always knows its host, however far apart they stand.
+      c.met.add(0);
+      c.peer.sendR({ t: 'meet', players: [{ ...this.o.info, n: 0 }] });
     }
   }
 
   private hostOnUnreliable(id: string, m: Unreliable) {
     const c = this.clients.get(id);
-    if (c && m.t === 'pong' && Number.isFinite(m.ts)) {
+    if (c && m.t === 'pong') {
       const rtt = performance.now() - m.ts;
       if (rtt >= 0 && rtt < 10_000) c.rttMs = smooth(c.rttMs, rtt);
       return;
     }
     if (!c?.info || m.t !== 'pos' || !(m.seq > c.lastSeq)) return;
-    if (!Number.isFinite(m.x) || !Number.isFinite(m.y)) return;
+    c.view = clampView(m.view || VIEW_RADIUS);
     const now = performance.now();
     // Lenient anti-teleport: clamp to max plausible travel since last update.
     const maxD = PLAYER_SPEED * ((now - c.lastT) / 1000 + 0.25) * 1.5;
@@ -554,7 +729,8 @@ export class Session {
     const d = Math.hypot(dx, dy);
     if (d > maxD) (dx *= maxD / d), (dy *= maxD / d), c.corrections++;
     const nx = c.x + dx, ny = c.y + dy;
-    if (!isWalkable(this.o.tiles(Math.floor(nx), Math.floor(ny)))) {
+    // Never through walls, and never out of this zone's reach: beyond its margin a player belongs to another zone.
+    if (!isWalkable(this.o.tiles(Math.floor(nx), Math.floor(ny))) || distToZone(nx, ny, this.zone) > ZONE_MARGIN + ZONE_SLACK) {
       c.corrections++;
       return;
     }
@@ -563,46 +739,40 @@ export class Session {
     c.y = ny;
     c.lastSeq = m.seq;
     c.lastT = now;
-    pushSample(this.remotes.get(id), now, nx, ny);
   }
 
-  private broadcastRoster() {
-    this.rosterDirty = false;
-    const players: PlayerInfo[] = [this.o.info];
-    for (const c of this.clients.values()) if (c.info) players.push(c.info);
-    for (const id of this.foreign) {
-      const r = this.remotes.get(id);
-      if (r) players.push(r.info);
+  /** A player's number is gone for good (it left, or was given a new one): drop it from everyone's view. */
+  private forget(n: number) {
+    this.hostView.delete(n);
+    for (const c of this.clients.values()) {
+      c.inView.delete(n);
+      c.met.delete(n);
     }
-    for (const c of this.clients.values()) if (c.info) c.peer.sendR({ t: 'roster', players });
   }
 
   /** A neighbouring host reported one of its players near our zone. */
   private onForeign(info: PlayerInfo, x: number, y: number) {
     if (this.role !== 'host' || info.id === this.o.peerId || this.clients.has(info.id)) return;
-    let r = this.remotes.get(info.id);
-    if (!r) {
-      r = { info, samples: [] };
-      this.remotes.set(info.id, r);
-      this.foreign.add(info.id);
-      this.rosterDirty = true;
-    } else if (r.info.name !== info.name || r.info.hue !== info.hue) {
-      r.info = info;
-      this.rosterDirty = true;
+    const now = performance.now();
+    const f = this.foreign.get(info.id);
+    if (f && f.info.name === info.name && f.info.hue === info.hue) {
+      f.x = x;
+      f.y = y;
+      f.t = now;
+      return;
     }
-    pushSample(r, performance.now(), x, y);
+    // New here, or its info changed: a new number, so clients are told who it is.
+    if (f) this.forget(f.n);
+    this.foreign.set(info.id, { info, n: this.nextN++, x, y, t: now });
   }
 
   /** Forget neighbouring zones' players that have gone quiet (out of range, or their link dropped). */
   private expireForeign(now: number) {
-    for (const id of this.foreign) {
-      const r = this.remotes.get(id);
-      const last = r?.samples[r.samples.length - 1];
-      if (!last || last.t < now - FOREIGN_TTL_MS) {
-        this.foreign.delete(id);
-        this.remotes.delete(id);
-        this.rosterDirty = true;
-      }
+    for (const [id, f] of this.foreign) {
+      if (f.t >= now - FOREIGN_TTL_MS) continue;
+      this.foreign.delete(id);
+      this.remotes.delete(id);
+      this.forget(f.n);
     }
   }
 
@@ -614,7 +784,7 @@ export class Session {
       this.o.profile.setHosting(false);
       for (const c of this.clients.values()) c.peer.close();
       this.clients.clear();
-      this.foreign.clear();
+      this.clearHostView();
       this.borders.close();
       this.closeSeeds();
     }
@@ -623,6 +793,7 @@ export class Session {
     this.role = 'connecting';
     this.hostId = hostId;
     this.remotes.clear();
+    this.clearClientView();
     this.dial(hostId);
   }
 
@@ -639,6 +810,7 @@ export class Session {
         if (this.hostPeer !== peer) return;
         this.hostPeer = null;
         this.remotes.clear();
+        this.clearClientView();
         this.snapT = 0;
         if (this.role === 'host') return;
         this.role = 'connecting';
@@ -649,39 +821,56 @@ export class Session {
         }, 2000);
       },
       onReliable: (m) => {
+        if (this.hostPeer !== peer) return;
         if (m.t === 'edits') return void this.receiveOps(m.ops, null);
         if (m.t === 'syncWant') {
+          // The host asks for chunks where we may hold edits it lacks. Each is sent once per link.
           const zone = new Set(this.zoneChunks());
-          const keys = Array.isArray(m.chunks) ? m.chunks.filter((k) => typeof k === 'string' && zone.has(k)) : [];
-          return this.sendOps(peer, this.chunkOps(keys));
+          const keys = Array.isArray(m.chunks)
+            ? m.chunks.filter((k) => typeof k === 'string' && zone.has(k) && !this.answered.has(k))
+            : [];
+          for (const k of keys) this.answered.add(k);
+          return this.sendOps(peer, keys.flatMap((k) => this.o.edits.chunkOps(k)));
         }
-        if (m.t !== 'roster') return;
-        const ids = new Set<string>();
-        for (const p of m.players) {
-          if (p.id === this.o.peerId) continue;
-          ids.add(p.id);
-          const r = this.remotes.get(p.id);
-          if (r) r.info = p;
-          else this.remotes.set(p.id, { info: p, samples: [] });
+        if (m.t !== 'meet' || !Array.isArray(m.players)) return;
+        for (const p of m.players.slice(0, 4096)) {
+          const n = Number(p?.n);
+          if (!Number.isSafeInteger(n) || n < 0) continue;
+          const info = sanitize(p);
+          this.met.set(n, info);
+          if (info.id === hostId) this.hostInfo = info;
+          const r = this.remotes.get(info.id);
+          if (r) r.info = info;
         }
-        for (const id of this.remotes.keys()) if (!ids.has(id)) this.remotes.delete(id);
       },
       onUnreliable: (m) => {
+        if (this.hostPeer !== peer) return;
         if (m.t === 'ping') return peer.sendU({ t: 'pong', ts: m.ts });
         if (m.t === 'state') {
-          if (!this.backups.includes(this.o.peerId) || !Array.isArray(m.p)) return;
+          if (!this.backups.includes(this.o.peerId)) return;
           const players = new Map<string, { x: number; y: number }>();
-          for (const [pid, x, y] of m.p) if (Number.isFinite(x) && Number.isFinite(y)) players.set(pid, { x, y });
-          this.backupState = { tick: Number(m.tick) || 0, players, t: performance.now() };
+          for (const [pid, x, y] of m.p) players.set(pid, { x, y });
+          this.backupState = { tick: m.tick, players, t: performance.now() };
           return;
         }
         if (m.t !== 'snap') return;
         const now = performance.now();
         this.snapTick = m.tick;
         this.snapT = now;
+        this.zonePlayers = m.n;
         this.stats.snaps++;
         this.stats.snapPlayers += m.p.length;
-        for (const [id, x, y] of m.p) pushSample(this.remotes.get(id), now, x, y);
+        for (const [n, x, y] of m.p) {
+          const info = this.met.get(n);
+          if (!info || info.id === this.o.peerId) continue; // Not announced yet (it arrives on the reliable channel).
+          let r = this.remotes.get(info.id);
+          if (!r) this.remotes.set(info.id, (r = { info, samples: [] }));
+          pushSample(r, now, x, y);
+        }
+        // A player the host has stopped sending has left our view.
+        for (const [pid, r] of this.remotes) {
+          if (r.samples[r.samples.length - 1].t < now - VIEW_TTL_MS) this.remotes.delete(pid);
+        }
       },
     });
     this.hostPeer = peer;
@@ -706,45 +895,9 @@ export class Session {
   private onTick() {
     const self = this.o.getSelf();
     if (this.role === 'host') {
-      this.tick++;
-      const now = performance.now();
-      if (this.lastTickT) {
-        const late = now - this.lastTickT > LATE_TICK_MS;
-        if (late) this.stats.lateTicks++;
-        this.late.push(late);
-        if (this.late.length > LATE_WINDOW) this.late.shift();
-      }
-      this.lastTickT = now;
-      if (this.tick % TICK_HZ === 0) {
-        for (const c of this.clients.values()) if (c.info) c.peer.sendU({ t: 'ping', ts: now });
-      }
-      const local: LocalPlayer[] = [{ info: this.o.info, x: self.x, y: self.y }];
-      for (const c of this.clients.values()) if (c.info) local.push({ info: c.info, x: c.x, y: c.y });
-      this.borders.tick(local);
-      this.expireForeign(now);
-      if (this.rosterDirty) this.broadcastRoster();
-
-      const p: Array<[string, number, number]> = local.map((l) => [l.info.id, round(l.x), round(l.y)]);
-      for (const id of this.foreign) {
-        const s = this.remotes.get(id)?.samples;
-        const last = s?.[s.length - 1];
-        if (last) p.push([id, round(last.x), round(last.y)]);
-      }
-      const snap: Unreliable = { t: 'snap', tick: this.tick, p };
-      for (const c of this.clients.values()) if (c.info) c.peer.sendU(snap);
-
-      if (this.tick % STATE_EVERY_TICKS === 0 && this.backups.length) {
-        const state: Unreliable = {
-          t: 'state', tick: this.tick, p: local.map((l) => [l.info.id, round(l.x), round(l.y)]),
-        };
-        for (const id of this.backups) this.clients.get(id)?.peer.sendU(state);
-      }
-      const spent = performance.now() - now;
-      this.stats.ticks++;
-      this.stats.tickMs += spent;
-      if (spent > this.stats.tickMaxMs) this.stats.tickMaxMs = spent;
+      this.hostTick(self);
     } else if (this.role === 'client' && this.hostPeer) {
-      this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: round(self.x), y: round(self.y) });
+      this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: self.x, y: self.y, view: this.viewRadius });
       // The host has gone quiet: ask the directory to check on it.
       const now = performance.now();
       if (this.snapT && now - this.snapT > HOST_SILENCE_MS && now - this.lastDownReport > HOST_SILENCE_MS) {
@@ -754,10 +907,92 @@ export class Session {
     }
   }
 
+  private hostTick(self: { x: number; y: number }) {
+    this.tick++;
+    const now = performance.now();
+    if (this.lastTickT) {
+      const late = now - this.lastTickT > LATE_TICK_MS;
+      if (late) this.stats.lateTicks++;
+      this.late.push(late);
+      if (this.late.length > LATE_WINDOW) this.late.shift();
+    }
+    this.lastTickT = now;
+    const ping = this.tick % TICK_HZ === 0;
+
+    // Everyone this host is the authority for: itself (number 0) and its clients.
+    const local: LocalPlayer[] = [{ info: this.o.info, n: 0, x: self.x, y: self.y }];
+    for (const c of this.clients.values()) {
+      if (!c.info) continue;
+      local.push({ info: c.info, n: c.n, x: c.x, y: c.y });
+      if (ping) c.peer.sendU({ t: 'ping', ts: now });
+      if (c.sync.send.length || c.sync.want.length || c.sync.asked.size) this.pumpSync(c.peer, c.sync, now);
+    }
+    for (const s of this.seedLinks.values()) {
+      if (s.sync.send.length || s.sync.want.length || s.sync.asked.size) this.pumpSync(s.peer, s.sync, now);
+    }
+    this.borders.tick(local);
+    this.expireForeign(now);
+
+    // Plus the neighbouring zones' players near this zone: everyone who can be seen from here.
+    const all: LocalPlayer[] = local.slice();
+    for (const f of this.foreign.values()) all.push(f);
+
+    // The host player's own view.
+    const view = this.viewRadius;
+    for (const p of all) {
+      if (p.n === 0) continue;
+      if (!inView(self, p, view, this.hostView.has(p.n))) {
+        if (this.hostView.delete(p.n)) this.remotes.delete(p.info.id);
+        continue;
+      }
+      this.hostView.add(p.n);
+      let r = this.remotes.get(p.info.id);
+      if (!r) this.remotes.set(p.info.id, (r = { info: p.info, samples: [] }));
+      else r.info = p.info;
+      pushSample(r, now, p.x, p.y);
+    }
+
+    // Each client gets the players within its own view, and is told who they are the first time.
+    for (const c of this.clients.values()) {
+      if (!c.info) continue;
+      const seen: PlayerPos[] = [];
+      let meet: PlayerEntry[] | null = null;
+      for (const p of all) {
+        if (p.n === c.n) continue;
+        if (!inView(c, p, c.view, c.inView.has(p.n))) {
+          c.inView.delete(p.n);
+          continue;
+        }
+        c.inView.add(p.n);
+        if (!c.met.has(p.n)) {
+          c.met.add(p.n);
+          (meet ??= []).push({ ...p.info, n: p.n });
+        }
+        seen.push([p.n, p.x, p.y]);
+      }
+      if (meet) c.peer.sendR({ t: 'meet', players: meet });
+      c.peer.sendU({ t: 'snap', tick: this.tick, n: local.length, p: seen });
+    }
+
+    if (this.tick % STATE_EVERY_TICKS === 0 && this.backups.length) {
+      const state: Unreliable = { t: 'state', tick: this.tick, p: local.map((l) => [l.info.id, l.x, l.y]) };
+      for (const id of this.backups) this.clients.get(id)?.peer.sendU(state);
+    }
+    const spent = performance.now() - now;
+    this.stats.ticks++;
+    this.stats.tickMs += spent;
+    if (spent > this.stats.tickMaxMs) this.stats.tickMaxMs = spent;
+  }
+
   // ---------------- debug ----------------
 
   get signalUp(): boolean {
     return this.signal.connected;
+  }
+
+  /** Traffic counters for every link in this tab (or bot process). */
+  get net(): typeof netStats {
+    return netStats;
   }
 
   /** The host this client reports to, or null when hosting or not yet assigned. */
@@ -768,7 +1003,7 @@ export class Session {
     const st = this.backupState;
     return {
       id: this.hostId,
-      name: this.remotes.get(this.hostId)?.info.name ?? null,
+      name: this.hostInfo?.name ?? null,
       open: !!this.hostPeer?.isOpen,
       snapTick: this.snapTick,
       snapAgeMs: this.snapT ? now - this.snapT : null,
@@ -792,12 +1027,12 @@ export class Session {
     return this.role === 'host' ? this.tick : this.snapTick;
   }
 
-  /** Links to neighbouring zones' hosts, when this peer is a host. */
   /** Seed peers linked to this host (open links only). */
   get seedCount(): number {
-    return this.role === 'host' ? [...this.seedLinks.values()].filter((p) => p.isOpen).length : 0;
+    return this.role === 'host' ? [...this.seedLinks.values()].filter((s) => s.peer.isOpen).length : 0;
   }
 
+  /** Links to neighbouring zones' hosts, when this peer is a host. */
   bordersDebug(): BorderDebug[] {
     return this.role === 'host' ? this.borders.debug() : [];
   }
@@ -817,6 +1052,7 @@ export class Session {
       reports: c.reports,
       corrections: c.corrections,
       rttMs: c.rttMs,
+      sees: c.inView.size,
     }));
   }
 
@@ -861,13 +1097,23 @@ export class Session {
   }
 }
 
-function pushSample(r: Remote | undefined, t: number, x: number, y: number) {
-  if (!r) return;
+function pushSample(r: Remote, t: number, x: number, y: number) {
   r.samples.push({ t, x, y });
   while (r.samples.length > 2 && r.samples[0].t < t - BUFFER_MS) r.samples.shift();
 }
 
-const round = (v: number) => Math.round(v * 100) / 100;
+/** A view radius held within the bounds a host allows. */
+const clampView = (r: number) => Math.min(MAX_VIEW_RADIUS, Math.max(MIN_VIEW_RADIUS, Number.isFinite(r) ? r : VIEW_RADIUS));
+
+/**
+ * Whether a viewer sees a player: within the viewer's radius, or a little
+ * beyond it if the player was in view already (so one at the edge doesn't flicker).
+ */
+function inView(viewer: { x: number; y: number }, p: { x: number; y: number }, radius: number, was: boolean): boolean {
+  const r = was ? radius + VIEW_HYSTERESIS : radius;
+  const dx = p.x - viewer.x, dy = p.y - viewer.y;
+  return dx * dx + dy * dy <= r * r;
+}
 
 /** Exponentially smoothed round-trip time. */
 const smooth = (prev: number | null, sample: number) => (prev === null ? sample : prev * 0.8 + sample * 0.2);

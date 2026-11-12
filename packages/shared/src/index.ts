@@ -5,6 +5,8 @@ export * from './worldgen.ts';
 export * from './zones.ts';
 export * from './movement.ts';
 export * from './protocol.ts';
+export * from './codec.ts';
+export * from './limits.ts';
 export * from './election.ts';
 export * from './edits.ts';
 export * from './sign.ts';

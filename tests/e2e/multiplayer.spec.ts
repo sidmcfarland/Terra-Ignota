@@ -235,6 +235,8 @@ test('crossing a zone border moves the player to that zone, with a margin', asyn
   await teleport(b, border - ZONE_MARGIN - 5);
   await expect.poll(async () => (await probe(b)).zone).toBe(home);
   await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  // A walks over to B: players only see each other within their view radius.
+  await teleport(a, border - ZONE_MARGIN - 10);
   await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
   await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length).toBe(1);
 });
@@ -279,8 +281,10 @@ test('neighbouring hosts link up so players see across a zone border', async ({ 
   await expect.poll(async () => (await probe(b)).borders, { timeout: 20_000 }).toBe(1);
 
   // Players near the border show up on the other side; C sees B through its host A.
+  // (B steps back towards the border; inside the margin, so it stays in its zone.)
   await teleport(a, border - 10);
   await teleport(c, border - 12);
+  await teleport(b, border + 20);
   await expect.poll(() => sees(a, bId), { timeout: 10_000 }).toBe(true);
   await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(true);
   await expect.poll(() => sees(b, aId), { timeout: 10_000 }).toBe(true);
@@ -293,14 +297,129 @@ test('neighbouring hosts link up so players see across a zone border', async ({ 
     return r ? Math.hypot(r.x - bPos.x, r.y - bPos.y) : Infinity;
   }).toBeLessThan(0.05);
 
-  // B walks deep into its zone, out of range of A's zone: A and C stop seeing B.
-  // Range is measured to the other zone, not to each viewer, so B still sees A
-  // (A is still near B's zone). Per-viewer interest management is M6.
+  // B walks deep into its zone, out of everyone's view: A and C stop seeing B, and B stops seeing them.
   await teleport(b, border + 200);
   await expect.poll(() => sees(a, bId), { timeout: 10_000 }).toBe(false);
   await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(false);
-  expect(await sees(b, aId)).toBe(true);
+  await expect.poll(() => sees(b, aId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => sees(b, cId), { timeout: 10_000 }).toBe(false);
   expect((await probe(a)).borders).toBe(1); // The link stays up; B just has nothing to share.
+
+  // View is per player, not per zone. B comes back to the border while A walks to the far
+  // side of its own zone: C, still at the border, and B see each other; A sees neither of
+  // them, and neither sees A, though A is still C's host and still relays B to it.
+  await teleport(b, border + 20);
+  await teleport(a, border - 230);
+  await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => sees(b, cId), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => sees(c, aId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => sees(b, aId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(0);
+  expect((await probe(a)).clients).toBe(1);
+});
+
+test('a host sends each player only the players within its view', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  const c = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
+  const [aId, bId, cId] = [await peerIdOf(a), await peerIdOf(b), await peerIdOf(c)];
+  const seen = async (p: Page) => (await probe(p)).remotes.filter(Boolean).length;
+  const moveTo = (p: Page, x: number, y: number) =>
+    p.evaluate(([x, y]) => void Object.assign((window as any).__ti.self, { x, y }), [x, y] as const);
+
+  // They spawn together, and everyone sees everyone.
+  for (const p of [a, b, c]) await expect.poll(() => seen(p), { timeout: 10_000 }).toBe(2);
+
+  // The host walks to the far corner of the zone, still inside it. B and C lose sight of
+  // it and it of them; they still see each other, and everyone stays connected.
+  const start = (await probe(a)).self;
+  const [zx, zy] = (await probe(a)).zone.split(',').map(Number);
+  const far = (v: number, z: number) => (v - z * ZONE_TILES > ZONE_TILES / 2 ? z * ZONE_TILES + 4 : (z + 1) * ZONE_TILES - 4);
+  await moveTo(a, far(start.x, zx), far(start.y, zy));
+  await expect.poll(() => sees(b, aId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => sees(c, aId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => seen(a), { timeout: 10_000 }).toBe(0);
+  expect(await sees(b, cId)).toBe(true);
+  expect(await sees(c, bId)).toBe(true);
+  expect((await probe(a)).clients).toBe(2);
+  expect((await probe(b)).role).toBe('client');
+  // The zone still counts three players for everyone, and B still knows who its host is.
+  for (const p of [a, b, c]) expect(await p.evaluate(() => (window as any).__ti.session.playerCount)).toBe(3);
+  const aName = await a.evaluate(() => (window as any).__ti.cfg.name as string);
+  await expect(b.locator('#debug')).toContainText(`HOST   ${aName}`);
+
+  // Back together, they see each other again.
+  await moveTo(a, start.x, start.y);
+  for (const p of [a, b, c]) await expect.poll(() => seen(p), { timeout: 10_000 }).toBe(2);
+});
+
+// ---- Limits on what a host accepts (M6) ----
+
+test('a host drops messages beyond the budget of a client, and cuts off one that keeps flooding', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  const dropped = () => a.evaluate(() => (window as any).__ti.session.net.dropped as number);
+  const flood = (n: number) => b.evaluate((n) => {
+    const peer = (window as any).__ti.session.hostPeer;
+    for (let i = 0; i < n; i++) peer.sendR({ t: 'chat', from: '', text: 'x' });
+  }, n);
+
+  // 150 messages at once: the host reads the first 80 or so (the burst allowance) and drops the rest unread.
+  await flood(150);
+  await expect.poll(dropped, { timeout: 10_000 }).toBeGreaterThanOrEqual(60);
+  expect((await probe(a)).clients).toBe(1);
+  expect((await probe(b)).role).toBe('client');
+
+  // Once the budget refills, messages from B count again.
+  await b.waitForTimeout(2000);
+  const [x, y] = await paintNext(b, 2, PATH);
+  await expect.poll(() => editAt(a, x, y), { timeout: 10_000 }).toBe(PATH);
+
+  // A client that keeps flooding is disconnected. It can come back, with a fresh budget.
+  const before = await dropped();
+  await flood(600);
+  await expect.poll(dropped, { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 200);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).not.toBe('client');
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
+});
+
+test('a client cannot push edits past the reach check through catch-up messages', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
+
+  // An edit 40 tiles from where B stands. The host refuses it as a live edit (out of reach),
+  // refuses it again when B sends it the way catch-up answers travel (the host never asked),
+  // and ignores an attempt by B to start catch-up a second time so as to be asked.
+  const [x, y] = await b.evaluate(async (tile) => {
+    const ti = (window as any).__ti;
+    const x = Math.floor(ti.self.x) + 40, y = Math.floor(ti.self.y);
+    const op = await ti.paint(x, y, tile);
+    const peer = ti.session.hostPeer;
+    peer.sendR({ t: 'edits', ops: [op] });
+    peer.sendR({ t: 'sync', d: { [`${Math.floor(x / 32)},${Math.floor(y / 32)}`]: '1:1:x' } });
+    peer.sendR({ t: 'edits', ops: [op] });
+    return [x, y] as [number, number];
+  }, PATH);
+  await expect.poll(() => a.evaluate(() => (window as any).__ti.session.stats.opsRefused as number), { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(3);
+  await b.waitForTimeout(500);
+  expect(await editAt(a, x, y)).toBe(null);
+
+  // An edit within reach still goes through.
+  const [nx, ny] = await paintNext(b, 2, PATH);
+  await expect.poll(() => editAt(a, nx, ny), { timeout: 10_000 }).toBe(PATH);
 });
 
 // ---- World edits (M4) ----

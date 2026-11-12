@@ -193,6 +193,7 @@ export class Bot {
       iceServers: o.stun ? [{ urls: o.stun }] : [],
       tiles: this.tiles,
       getSelf: () => this.pos,
+      getView: () => o.view,
     });
   }
 

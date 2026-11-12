@@ -16,7 +16,9 @@ import {
 
 const PORT = Number(process.env.PORT ?? 8787);
 const MAX_MSG = 16 * 1024;
+/** Messages per second a socket may send, and how many it may save up for a burst (a host relaying offers for a wave of joiners). */
 const MAX_MSGS_PER_SEC = 50;
+const MAX_MSG_BURST = 200;
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ZONE_RE = /^-?\d{1,9},-?\d{1,9}$/;
 /** A host reported silent gets this long to answer a probe before it's dropped. */
@@ -267,7 +269,7 @@ setInterval(() => {
 }, 15_000).unref();
 
 setInterval(() => {
-  for (const c of clients) c.budget = MAX_MSGS_PER_SEC;
+  for (const c of clients) c.budget = Math.min(MAX_MSG_BURST, Math.max(c.budget, 0) + MAX_MSGS_PER_SEC);
 }, 1000).unref();
 
 http.listen(PORT, () => console.log(`signal listening on :${PORT}`));

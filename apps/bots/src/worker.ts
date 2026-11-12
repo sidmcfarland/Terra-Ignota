@@ -32,6 +32,8 @@ export interface Sample {
   corrections: number;
   edits: number;
   merged: number;
+  /** Edits hosts refused before verifying them (out of reach, over a limit, or not asked for). */
+  refused: number;
   sent: Record<string, Counter>;
   recv: Record<string, Counter>;
   dropped: number;
@@ -61,7 +63,7 @@ export function runWorker(o: Options, emit: (s: Sample) => void): { stop(): void
 
   const bots: Bot[] = [];
   const tally: Tally = { join: [], handoff: [], failover: [] };
-  let retired = { crossings: 0, edits: 0, merged: 0, hostChanges: 0, ticks: 0, lateTicks: 0 };
+  let retired = { crossings: 0, edits: 0, merged: 0, refused: 0, hostChanges: 0, ticks: 0, lateTicks: 0 };
   let errors = 0;
   const errorText: string[] = [];
   const note = (...args: unknown[]) => {
@@ -110,6 +112,7 @@ export function runWorker(o: Options, emit: (s: Sample) => void): { stop(): void
     const s = b.session.stats;
     retired = {
       crossings: retired.crossings + b.crossings, edits: retired.edits + b.editsMade, merged: retired.merged + b.merged,
+      refused: retired.refused + s.opsRefused,
       hostChanges: retired.hostChanges + s.hostChanges, ticks: retired.ticks + s.ticks, lateTicks: retired.lateTicks + s.lateTicks,
     };
   }
@@ -144,7 +147,7 @@ export function runWorker(o: Options, emit: (s: Sample) => void): { stop(): void
       tickAvg: [], tickMax: [], hostClients: [], ticks: retired.ticks, lateTicks: retired.lateTicks,
       hostChanges: retired.hostChanges, crossings: retired.crossings,
       gaps: { join: tally.join.splice(0), handoff: tally.handoff.splice(0), failover: tally.failover.splice(0) },
-      reports: 0, corrections: 0, edits: retired.edits, merged: retired.merged,
+      reports: 0, corrections: 0, edits: retired.edits, merged: retired.merged, refused: retired.refused,
       sent: Object.fromEntries(netStats.sent), recv: Object.fromEntries(netStats.recv),
       dropped: netStats.dropped, connectFails: netStats.connectFails,
       errors, errorText, lagMs: Math.round(lag), cpu: (used.user + used.system) / 1e6,
@@ -168,6 +171,7 @@ export function runWorker(o: Options, emit: (s: Sample) => void): { stop(): void
       s.crossings += b.crossings;
       s.edits += b.editsMade;
       s.merged += b.merged;
+      s.refused += st.opsRefused;
       if (sess.role === 'host') {
         s.hosts++;
         const clients = sess.clientsDebug();

@@ -57,6 +57,7 @@ interface Row {
   corrections: number;
   edits: number;
   merged: number;
+  refused: number;
   sent: Record<string, Counter>;
   recvBytes: number;
   dropped: number;
@@ -103,7 +104,7 @@ function runSwarm(o: Options) {
     `swarm: ${o.bots} bots over ${o.zones} zones in world ${o.world} via ${o.signal} (protocol ${PROTOCOL_VERSION})\n` +
       `       ${o.procs} process${o.procs > 1 ? 'es' : ''}, ${o.ramp} bots/s ramp (${rampS.toFixed(0)}s), ` +
       `measuring from ${measureFrom.toFixed(0)}s${o.duration > 0 ? ` to ${endAt.toFixed(0)}s` : ''}; ` +
-      `hosts ${o.hosts}, roam ${o.roam}, edits ${o.edits}/s, churn ${o.churn || 'off'}`,
+      `hosts ${o.hosts}, roam ${o.roam}, view ${o.view}, edits ${o.edits}/s, churn ${o.churn || 'off'}`,
   );
 
   const t0 = performance.now();
@@ -157,7 +158,7 @@ function combine(t: number, samples: Sample[], gaps: { join: number[]; handoff: 
     hostChanges: sum((s) => s.hostChanges), crossings: sum((s) => s.crossings),
     join: gaps.join, handoff: gaps.handoff, failover: gaps.failover,
     reports: sum((s) => s.reports), corrections: sum((s) => s.corrections),
-    edits: sum((s) => s.edits), merged: sum((s) => s.merged),
+    edits: sum((s) => s.edits), merged: sum((s) => s.merged), refused: sum((s) => s.refused),
     sent, recvBytes,
     dropped: sum((s) => s.dropped), connectFails: sum((s) => s.connectFails),
     errors: sum((s) => s.errors), errorText: [...new Set(samples.flatMap((s) => s.errorText))].slice(0, 8),
@@ -223,6 +224,7 @@ interface Summary {
   corrected: number;
   edits: number;
   editsMerged: number;
+  editsRefused: number;
   errors: number;
   errorText: string[];
   connectFails: number;
@@ -281,6 +283,7 @@ function summarize(o: Options, rows: Row[], all: Row[]): Summary {
     corrected: last && last.reports ? round(last.corrections / (last.reports + last.corrections), 4) : 0,
     edits: last ? last.edits : 0,
     editsMerged: last ? last.merged : 0,
+    editsRefused: last ? last.refused : 0,
     errors: last ? last.errors : 0,
     errorText: last ? last.errorText : [],
     connectFails: last ? last.connectFails : 0,
@@ -328,7 +331,7 @@ function report(s: Summary): string {
     `  host changes     ${s.hostChanges}; reconnects after one ${gap(s.failoverMs)}`,
     `  joins            ${gap(s.joinMs)}`,
     `  movement         ${pct(s.corrected)} of position reports corrected by hosts`,
-    `  edits            ${s.edits} made, ${s.editsMerged} merged from the network`,
+    `  edits            ${s.edits} made, ${s.editsMerged} merged from the network, ${s.editsRefused} refused by hosts`,
     `  errors           ${s.errors} logged, ${s.connectFails} links failed to open, ${s.dropped} messages dropped by limits`,
     ...s.errorText.map((e) => `    ${e}`),
     `  bot processes    worst event-loop delay ${s.maxLagMs}ms, ${fix(s.cpuCores, 2)} CPU cores, ${s.rssMb} MB`,

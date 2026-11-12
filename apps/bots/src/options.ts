@@ -25,6 +25,8 @@ export interface Options {
   settle: number;
   /** Client cap each bot advertises for election (0: from this machine's cores, as a browser would). */
   cap: number;
+  /** How far each bot sees other players, in tiles (a browser asks for what its screen shows: about 67 at 1080p and default zoom). */
+  view: number;
   /** STUN server URL for bots (empty: local candidates only, for one machine or a LAN). */
   stun: string;
   /** Write the final summary to this file as JSON. */
@@ -48,6 +50,7 @@ const DEFAULTS: Options = {
   report: 5,
   settle: 10,
   cap: 0,
+  view: 64,
   stun: '',
   json: '',
   worker: -1,
@@ -68,6 +71,7 @@ export const USAGE = `Usage: npm run bots -- [options]
   --report S     seconds between progress lines (default ${DEFAULTS.report})
   --settle S     seconds after the last bot starts before measuring (default ${DEFAULTS.settle})
   --cap N        client cap each bot advertises; 0 = from CPU cores (default 0)
+  --view N       how far each bot sees other players, in tiles (default ${DEFAULTS.view})
   --stun URL     STUN server for the bots (default: none, local candidates only)
   --json FILE    also write the summary as JSON`;
 

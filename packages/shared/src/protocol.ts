@@ -2,7 +2,7 @@ import type { TileOp } from './edits.ts';
 import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 
@@ -61,7 +61,7 @@ export type SignalData =
   | { kind: 'answer'; sdp: string }
   | { kind: 'ice'; candidate: RTCIceCandidateInit | null };
 
-// ---- Peer <-> peer (WebRTC data channels, JSON) ----
+// ---- Peer <-> peer (WebRTC data channels) ----
 
 export interface PlayerInfo {
   id: string;
@@ -69,7 +69,18 @@ export interface PlayerInfo {
   hue: number;
 }
 
-/** Reliable channel. */
+/**
+ * A player as a host announces it: its info plus the short number that stands
+ * for it in that host's snapshots. Numbers belong to one host and are never reused.
+ */
+export interface PlayerEntry extends PlayerInfo {
+  n: number;
+}
+
+/** A player's position: the announcing host's number for the player, then x and y in tiles. */
+export type PlayerPos = [n: number, x: number, y: number];
+
+/** Reliable channel (JSON). */
 export type Reliable =
   /** Client to host on connect. pub is the device's Ed25519 public key, the author of its edits. */
   | { t: 'hello'; info: PlayerInfo; x: number; y: number; pub: string }
@@ -79,21 +90,27 @@ export type Reliable =
   | { t: 'edits'; ops: TileOp[] }
   /** Client to host on connect: a digest per zone chunk the client holds edits for. */
   | { t: 'sync'; d: Record<string, string> }
-  /** Host to client: chunks where the client may have edits the host lacks; send them. */
+  /**
+   * Host to a syncing peer: chunks where the peer may have edits the host lacks; send them.
+   * The host asks a few chunks at a time, and only accepts edits for chunks it asked for.
+   */
   | { t: 'syncWant'; chunks: string[] }
-  | { t: 'roster'; players: PlayerInfo[] }
+  /** Host to client: players about to appear in its snapshots. Sent once per player, as each first comes into the client's view. */
+  | { t: 'meet'; players: PlayerEntry[] }
   /** Host to neighbouring host: the players in the sender's zone. */
-  | { t: 'border'; players: PlayerInfo[] }
+  | { t: 'border'; players: PlayerEntry[] }
   | { t: 'chat'; from: string; text: string };
 
-/** Unreliable channel. Positions packed as [id, x, y]. */
+/** Unreliable channel (binary: see codec.ts). */
 export type Unreliable =
-  | { t: 'pos'; seq: number; x: number; y: number }
+  /** Client to host: where the client is, and how far (in tiles) it wants to see other players. */
+  | { t: 'pos'; seq: number; x: number; y: number; view: number }
   /** Host to client round-trip probe, echoed back as pong. */
   | { t: 'ping'; ts: number }
   | { t: 'pong'; ts: number }
-  | { t: 'snap'; tick: number; p: Array<[string, number, number]> }
+  /** Host to client: the host's tick, how many players its zone holds, and the players within the client's view. */
+  | { t: 'snap'; tick: number; n: number; p: PlayerPos[] }
   /** Host to neighbouring host: the sender's players near the receiver's zone. */
-  | { t: 'edge'; p: Array<[string, number, number]> }
-  /** Host to its backups: the zone state a successor needs. Players packed as [id, x, y]. */
+  | { t: 'edge'; p: PlayerPos[] }
+  /** Host to its backups: the zone state a successor needs. Players packed as [peer id, x, y]. */
   | { t: 'state'; tick: number; p: Array<[string, number, number]> };
