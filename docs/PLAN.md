@@ -2,6 +2,8 @@
 
 A co-op exploration MMO in an isometric 3D view. It runs as an installable web app (PWA): open a URL and you're in. Players' devices host the world. The only central piece is one ~$5/mo VPS that runs signaling, a TURN relay and an always-on seed peer.
 
+How the game looks and sounds (theme, style, palette, mood, performance budgets and every art decision) is in [ART_DIRECTION.md](ART_DIRECTION.md).
+
 ## Core loop
 The world is endless, generated from a seed, and starts out **unknown**. Explorers fog-reveal it together into a **shared atlas**. Players gather, build waystations and name places, and their discoveries persist for everyone.
 
@@ -109,6 +111,8 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Edit ties break on clock, then author key, then signature | One device can run several tabs with the same key, so author alone isn't a total order. |
 | The directory confirms a silent host with a probe answered from page script | One client's report could be wrong (its own link may be the problem), and a hung page still answers WebSocket pings from the browser's network layer. |
 | Hosts of neighbouring zones (incl. diagonals) share one direct link, listed by the signal server | Players see across borders while clients still connect only to their own host. The server already knows every zone's host, so it sends each host its neighbours. The lower peer id dials, so each pair has one link. |
+| Art style: a low-poly diorama on a parchment map; unexplored land is blank parchment that inks in | It builds on the existing renderer, stays small for a PWA and makes the game's name the look. Details in ART_DIRECTION.md. |
+| The visual foundation (lighting, shaders, biomes, time of day, weather) is built before M5; bulk assets wait for the M5 mechanics | The foundation doesn't depend on mechanics. Props, icons and sounds do. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 
 ## Risks

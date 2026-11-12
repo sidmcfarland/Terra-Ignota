@@ -1,6 +1,6 @@
 # Terra Ignota: notes for contributors and agents
 
-A peer-to-peer co-op exploration MMO that runs as a PWA. Read **docs/PLAN.md** first. It has the architecture, milestone status, current limitations and decision log. Update it when a milestone lands or a decision changes.
+A peer-to-peer co-op exploration MMO that runs as a PWA. Read **docs/PLAN.md** first. It has the architecture, milestone status, current limitations and decision log. Update it when a milestone lands or a decision changes. For anything visual or audio, read **docs/ART_DIRECTION.md** too. It is the source of truth for the look, the palette and the performance budgets, and it gets updated whenever an art decision is made.
 
 ## Commands
 ```sh
