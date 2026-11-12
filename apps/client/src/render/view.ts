@@ -180,6 +180,16 @@ export class GameView {
     this.look.fixedHour = hour;
   }
 
+  /** The wind being shown: the direction it blows toward and its strength, 0–1. */
+  get wind(): { x: number; y: number; strength: number } {
+    return this.look.wind;
+  }
+
+  /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
+  setWind(strength: number | null) {
+    this.look.fixedWind = strength;
+  }
+
   /** Draw zone borders and handoff margins on the ground (debug mode). */
   set showZones(on: boolean) {
     this.zoneLines.visible = on;

@@ -15,6 +15,7 @@ import {
 } from 'three';
 import { rand2 } from '@terra/shared';
 import { hourAt, keyBody, lightAt, luminance, makeLight } from './day.ts';
+import { steadyWind, windAt, type Wind } from './wind.ts';
 
 /**
  * The look: palette, lighting and the master shaders every surface is built from.
@@ -144,6 +145,8 @@ export const U = {
   uLampColor: { value: new Color(0, 0, 0) },
   /** Strength of the key light's glint on water. */
   uGlint: { value: 1 },
+  /** The wind. xy: the direction it blows toward (world x, z); z: strength, 0–1; w: how far its gusts have travelled (a phase). */
+  uWind: { value: new Vector4(1, 0, 0, 0) },
   uTime: { value: 0 },
   uGrain: { value: null as DataTexture | null },
 } satisfies Record<string, IUniform>;
@@ -164,6 +167,7 @@ uniform vec3 uPaperLight;
 uniform vec4 uLamps[${LAMPS}];
 uniform vec3 uLampColor;
 uniform float uGlint;
+uniform vec4 uWind;
 uniform float uTime;
 `;
 
@@ -190,6 +194,14 @@ vec3 lightOn(vec3 n, float ao, float shadow) {
   float ndl = max(dot(n, uSunDir), 0.0);
   vec3 fill = mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5);
   return uSunColor * (ndl * shadow) + fill * ao;
+}
+// The wind at a spot. x: how hard it blows there right now, as gusts roll downwind in broad, wandering bands.
+// y: a quick flutter (-1 to 1) that differs between neighbours.
+vec2 windAt(vec2 p) {
+  float along = dot(p, uWind.xy), across = dot(p, vec2(-uWind.y, uWind.x));
+  float gust = 0.5 + 0.5 * sin(along * 0.2 - uWind.w + 1.6 * sin(across * 0.07 + uWind.w * 0.11));
+  float flutter = sin(along * 1.9 + across * 1.3 - uWind.w * 5.3);
+  return vec2(uWind.z * (0.3 + 0.7 * gust), flutter);
 }
 // Lantern light on a point: a warm pool around each explorer after dark, wrapped so level ground still catches it.
 vec3 lampOn(vec3 p, vec3 n) {
@@ -308,6 +320,7 @@ attribute vec3 aShade;
 #endif
 varying vec3 vLit;
 varying float vReveal;
+varying float vFade;
 varying vec2 vMap;
 void main() {
   vec3 albedo = toLinear(aColor.rgb);
@@ -330,7 +343,29 @@ void main() {
   float rise = riseOf(reveal);
   // Things stand up a little after the ground under them has risen.
   float grow = smoothstep(0.62, 1.0, reveal);
-  vec4 world = modelMatrix * vec4(origin + (local - origin) * grow, 1.0);
+  vec2 wind = windAt(root.xz);
+  vec3 downwind = vec3(uWind.x, 0.0, uWind.y);
+#ifdef USE_INSTANCING
+  // A tree is stiff: its crown leans a little and rocks slowly, each tree in its own time,
+  // and its leaves turn in the wind, so the facets of a crown catch the light in turn.
+  float tall = local.y - origin.y;
+  float bend = tall * tall * 0.05 * wind.x * (1.0 + 0.5 * sin(uWind.w * 2.1 + h * 6.2832));
+  n = normalize(n + downwind * (0.55 * wind.x * sin(uWind.w * 6.0 + h * 40.0 + dot(normal, vec3(5.0, 9.0, 7.0)))));
+  // Crowns standing between the explorer and the eye thin out, so you can see yourself among the trunks.
+  vec2 toEye = normalize(uViewDir.xz);
+  vec2 rel = root.xz - uFocus - toEye * 1.7;
+  float hide = length(vec2(dot(rel, toEye) / 2.6, dot(rel, vec2(-toEye.y, toEye.x)) / 1.3));
+  vFade = mix(1.0, 0.18 + 0.82 * smoothstep(0.55, 1.0, hide), smoothstep(0.25, 0.45, position.y));
+#else
+  // Grass and leaves are supple: the tip goes with every gust, and bent grass shows its paler side.
+  float tall = aColor.a * ${lift.toFixed(2)};
+  float bend = tall * wind.x * (1.0 + 0.35 * wind.y);
+  albedo *= 1.0 + 0.3 * (wind.x - 0.3 * uWind.z) * min(tall * 4.0, 1.0);
+  vFade = 1.0;
+#endif
+  // Lean downwind, dipping a little so nothing stretches.
+  vec3 lean = downwind * bend - vec3(0.0, 0.5 * bend * bend / max(tall, 0.05), 0.0);
+  vec4 world = modelMatrix * vec4(origin + (local - origin + lean) * grow, 1.0);
   world.y = mix(-0.03, world.y, rise);
   vec3 light = lightOn(n, shade.x, bakedShadow(shade)) + lampOn(world.xyz, n) * shade.x;
   vLit = mix(uParchment * uPaperLight * 0.8, albedo * light, grow);
@@ -341,9 +376,12 @@ void main() {
     FRAG_COMMON + /* glsl */ `
 varying vec3 vLit;
 varying float vReveal;
+varying float vFade;
 varying vec2 vMap;
 void main() {
   if (vReveal < 0.63) discard;
+  // A thinned crown is drawn as a scatter of its own pixels: no blending, no sorting.
+  if (vFade < fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))))) discard;
   gl_FragColor = vec4(grade(vLit * (0.93 + 0.14 * toothAt(vMap))), 1.0);
   ${FRAG_END}
 }`,
@@ -363,11 +401,13 @@ varying float vDepth;
 varying float vShadow;
 varying float vRise;
 varying vec3 vLamp;
+varying float vGust;
 void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float rise = riseOf(revealAt(world.xz));
-  // Ripples grow with depth so they never cut into the shoreline.
-  float swell = 0.05 * smoothstep(0.05, 1.2, aDepth) * rise;
+  // Ripples grow with depth so they never cut into the shoreline, and with the wind.
+  float swell = 0.05 * smoothstep(0.05, 1.2, aDepth) * rise * (0.7 + 0.9 * uWind.z);
+  vGust = windAt(world.xz).x;
   world.y += swell * (sin(world.x * 0.9 + uTime * 1.1) + sin(world.z * 1.3 - uTime * 0.8 + world.x * 0.4));
   vWorld = world.xyz;
   vDepth = aDepth;
@@ -385,13 +425,15 @@ varying float vDepth;
 varying float vShadow;
 varying float vRise;
 varying vec3 vLamp;
+varying float vGust;
 void main() {
   // Face normal from screen-space derivatives: each ripple facet catches the light on its own.
   vec3 n = cross(dFdx(vWorld), dFdy(vWorld));
   n = normalize(vec3(n.x * 5.0, abs(n.y), n.z * 5.0));
   float ndl = max(dot(n, uSunDir), 0.0);
   vec3 light = uSunColor * (ndl * vShadow) + mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5) + vLamp;
-  vec3 col = mix(uShallow, uDeep, smoothstep(0.0, 2.4, vDepth)) * light;
+  // A gust ruffles the surface and darkens it as it passes (a cat's paw).
+  vec3 col = mix(uShallow, uDeep, smoothstep(0.0, 2.4, vDepth)) * light * (1.0 - 0.16 * vGust);
   float glint = pow(max(dot(n, normalize(uSunDir + uViewDir)), 0.0), 48.0);
   col += uSunColor * (glint * 0.5 * uGlint * vShadow);
   float alpha = mix(0.6, 0.96, smoothstep(0.0, 1.6, vDepth));
@@ -505,6 +547,11 @@ export class Look {
   private readonly lamp = new Color(0xffae62);
   /** The light on open, level ground this frame (scratch). */
   private readonly open = [0, 0, 0];
+  /** Hold the wind at this strength (0–1), or null to follow the shared clock. */
+  fixedWind: number | null = null;
+  readonly wind: Wind = { x: 1, y: 0, strength: 0 };
+  private windPhase = 0;
+  private lastS = 0;
 
   constructor() {
     U.uGrain.value ??= grainTexture();
@@ -548,6 +595,13 @@ export class Look {
     const flicker = 1 + 0.035 * Math.sin(timeS * 7.3) + 0.025 * Math.sin(timeS * 12.1 + 1.3);
     U.uLampColor.value.copy(this.lamp).multiplyScalar(1.3 * L.lamp * flicker);
     this.key = up * (moon ? 0.55 : 1);
+
+    // Gusts travel faster in a stronger wind, so their phase is added up frame by frame.
+    const w = this.fixedWind === null ? windAt(Date.now(), this.wind) : steadyWind(this.fixedWind, this.wind);
+    const dt = Math.min(0.1, Math.max(0, timeS - this.lastS));
+    this.lastS = timeS;
+    this.windPhase = (this.windPhase + dt * (0.3 + 0.9 * w.strength)) % (Math.PI * 2000);
+    U.uWind.value.set(w.x, w.y, w.strength, this.windPhase);
 
     U.uViewDir.value.copy(viewDir);
     U.uFocus.value.set(focus.x, focus.y);

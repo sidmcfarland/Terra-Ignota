@@ -133,6 +133,19 @@ The colours of the light change through the day. They are in "Time of day" below
 - **The day follows the wall clock, not the network.** One day lasts 48 real minutes and every explorer reads the same hour from their own clock. Nothing is sent. The hours are not spent evenly: the day lingers at dawn (about 5 minutes) and through the golden hour and sunset (about 8), and hurries through noon (about 5) and the night (about 10 of the 48).
 - **`#time=`** holds the light still: a name (`dawn`, `morning`, `noon`, `afternoon`, `golden`, `sunset`, `dusk`, `night`) or an hour such as `#time=16.5`. `window.__ti.view.setHour(h)` does the same; `setHour(null)` returns to the clock. The debug panel shows the hour.
 
+## Wind
+**Chosen in visual-foundation milestone 4 (2026-11-12); awaiting Sid's approval.** The code is `apps/client/src/render/wind.ts` (direction and strength from the clock) and `windAt` in `look.ts` (the field every shader samples).
+
+- **One wind for everything.** A direction, a strength from 0 to 1, and gusts that roll downwind across the land in broad, wandering bands about 30 tiles apart. Grass, flowers, reeds, bushes, trees and water all sample the same field, so a gust is seen crossing a meadow, reaching the trees and then ruffling the lake.
+- **Supple things bend, stiff things rock.** A blade of grass leans downwind by up to its own height in a gale and flutters out of step with its neighbours. A tree's crown leans only a little and rocks slowly, each tree in its own time. Stones do not move.
+- **Bent grass is paler.** A gust lightens the blades it bends by a few percent, so wind shows as bands of sheen crossing a meadow even when the blades are too small to see move.
+- **Leaves turn.** The facets of a crown catch the light in turn as the wind passes, by tilting their normals. No geometry moves for this.
+- **Water answers too.** Ripples grow with the wind, and a gust darkens the surface as it passes (a cat's paw).
+- **Fair weather is never still and never rough.** On its own the wind wanders between 0.12 and 0.7 over minutes, from the south-west and swinging about 50° either way. Weather (milestone 5) will push it harder.
+- **It follows the wall clock, not the network,** like the time of day. Every explorer feels the same breeze.
+- **`#wind=0.8`** holds the wind at a strength from the prevailing direction; `window.__ti.view.setWind(s)` does the same and `setWind(null)` returns to the clock. The debug panel shows the strength.
+- **Tree crowns thin out where they would hide you.** Crowns standing between your explorer and the eye are drawn as a faint scatter of their own pixels, so you can see yourself among the trunks. There is no blending and no sorting.
+
 ## Asset types and formats
 **Decided at this level. No bulk asset production yet: see "Decisions".**
 
@@ -190,9 +203,10 @@ The colours of the light change through the day. They are in "Time of day" below
 **How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles and chunk build times. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
 
 ## Where the renderer is today
-As of visual-foundation milestone 3 (2026-11-12). Update this section as the visual foundation lands.
+As of visual-foundation milestone 4 (2026-11-12). Update this section as the visual foundation lands.
 
 - `apps/client/src/render/look.ts`: **the look.** The palette, the shared uniforms (key light, sky fill, ground bounce, lanterns, the light on the parchment, grade, time, the known-world circle) and the master shaders every surface uses: ground, foliage (trees and ground cover), water, parchment, solid (avatars) and the soft blob shadow. New surfaces should be built from these, not from Three.js's stock materials, so they take the same light, lanterns, grade and ink-in.
+- `apps/client/src/render/wind.ts`: **the wind** (milestone 4). Direction and strength from the wall clock, as plain numbers with unit tests. The field itself (`windAt`) is in `look.ts`'s shared vertex code. See "Wind".
 - `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day".
 - **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
 - **Shadows and ambient occlusion are baked when a chunk is built.** Each vertex stores how high the land (and forest canopy) rises toward the morning sun and toward the evening sun. The shader compares that with the sun's elevation, so long soft shadows follow the time of day for one byte per vertex per direction. The morning horizon is used until midday and the evening one after it, for the sun and for the moon alike.
@@ -201,13 +215,13 @@ As of visual-foundation milestone 3 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/flora.ts` and the `adorn` rules in `terrain.ts`: **what grows on the land** (milestone 2). Everything is decided from `(seed, x, y)`, is client-only and never affects walkability. A tile a player has edited is bare.
   - **Trees are instanced:** a broadleaf (31 triangles: trunk, a faceted crown and a side lobe) and a pine (21 triangles: trunk and three drooping tiers). About two forest tiles in three hold a tree, so the forest floor shows between them. Each is turned, stretched and tinted differently. Broadleaves fill the lowlands and pines take over as the land climbs, with the odd stand of each among the other. A few lone trees stand in open grass and cast a soft baked shadow.
   - **Ground cover is one merged mesh per chunk** (one draw call): grass tufts that thicken in the lusher patches, taller golden tufts and flower colonies in meadows, ferns and bushes on the forest floor, marram grass and pebbles on the beach, reed beds with seed heads in the shallows, stones that break the water, boulders and stunted pines on rock, dark stones in the snow.
-  - Both use one vertex layout whose colour carries each vertex's height above its root (`lift`). The shader uses it to grow things out of the map at the edge of the known world; the wind (milestone 4) will use it to move tips more than roots.
+  - Both use one vertex layout whose colour carries each vertex's height above its root (`lift`). The shader uses it to grow things out of the map at the edge of the known world, and the wind uses it to move tips more than roots.
 - `apps/client/src/render/view.ts`: orthographic isometric camera, the parchment plane, avatars and the performance counters. An avatar is a placeholder **turned playing piece** in the player's colour (eight flat sides, a darker foot) with an HTML name label. It takes the baked shade of the ground it stands on, and lays a soft shadow along the slope, away from the sun and longer when the sun is low.
 - `apps/client/src/render/atlas.ts`: a top-down 2D chunk painter, kept for the shared atlas (M5). Not used in-game yet.
 - `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
 - Biomes come from worldgen's tiles: deep water, water, sand, grass, forest, meadow, rock, snow.
 - The HUD and debug panel are recoloured to parchment and sepia ink. Fonts and proper UI chrome are still to come.
-- There is no weather, wind, audio or character model yet. Nothing moves except the water, the light and the lantern flame.
+- There is no weather, audio or character model yet.
 
 ## Decisions
 | Date | Decision | Why |
@@ -231,6 +245,9 @@ As of visual-foundation milestone 3 (2026-11-12). Update this section as the vis
 | 2026-11-12 | The hour comes from each player's wall clock (a 48-minute day), not from the network | Everyone sees the same light with no wire message and no protocol change. A world could later keep its own time if a mechanic needs it. Awaiting Sid. |
 | 2026-11-12 | The moon travels the sun's arc twelve hours behind it | The shadows baked for the morning and evening sun then serve the night for nothing, and the key light can change hands while both are below the horizon. Awaiting Sid. |
 | 2026-11-12 | Each arrangement sets how bright open ground is, and the lights are scaled to meet it | Brightness is authored directly, so no hour is blown out or murky, and weather can later change the mix of lights without changing the exposure. Awaiting Sid. |
+| 2026-11-12 | The wind is one field, read from the wall clock, that every growing thing and the water sample | A gust that crosses grass, trees and water in turn makes the land feel like one place. It costs a few sines per vertex and no extra draw calls. Awaiting Sid. |
+| 2026-11-12 | Crowns that would hide your explorer are thinned with a dither, not blended | Blending needs sorting and a second pass; a scatter of discarded pixels is free and reads as a soft cutaway. Awaiting Sid. |
+| 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Awaiting Sid. |
 
 ## Open questions
@@ -250,10 +267,10 @@ The order is by how much each step decides the look of everything after it. Each
 | 1 | **Core look:** lighting model, grade, palette, master shaders, parchment and the ink-in edge, performance counters | Every later surface is built from these shaders and reads these uniforms. Getting them wrong means redoing everything. | **Done** |
 | 2 | **Primary biome, fully realised:** temperate coast and woodland (sand, grass, meadow, forest, shallows). Real trees, undergrowth, grass tufts, rocks, flowers, reeds and shore detail; grounded avatars | It is the quality benchmark. Every other biome is judged against it and reuses its pieces. | **Done** |
 | 3 | **Day/night cycle** and its key lighting arrangements (dawn, noon, golden hour, dusk, moonlit night) | The baked horizons and the grade were built for this in milestone 1. It has to come before weather, which bends the same lights. | **Done** |
-| 4 | **Wind** and foliage sway, plus foliage detail | Needs the foliage from 2. Wind is one shared field that weather (5) then drives. | Next |
-| 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | |
+| 4 | **Wind** and foliage sway, plus foliage detail | Needs the foliage from 2. Wind is one shared field that weather (5) then drives. | **Done** |
+| 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | Next |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | |
-| 7 | **More biomes** and the transitions between them | Reuses everything above. See the finding below: worldgen has one climate today. | |
+| 7 | **More biomes** and the transitions between them | Reuses everything above. See the finding below: worldgen has one climate today. | **On hold** until M4c is merged (Sid, 2026-11-12) |
 | 8 | **Finishing:** variations, extra effects, loose ends from the list below | Polish last. | |
 
 ### Kept for later (found along the way)
@@ -261,7 +278,9 @@ The order is by how much each step decides the look of everything after it. Each
 - **Pixel ratio on phones.** Still capped at 2. Try 1.5, or scale it by measured frame time.
 - **Avatars** are a placeholder playing piece. Real characters wait for M5.
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
-- **Trees do not block or hide the explorer.** Walking through a forest, the piece passes through trunks and disappears under crowns. Fading the crowns near the player is a cheap fix.
+- **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), but only for your own explorer: others still disappear under the canopy.
+- **The wind is computed for every plant even when zoomed out,** where the sway is smaller than a pixel. If a phone's vertex load is too high, fade the sway out below about 12 pixels a tile and keep only the sheen.
+- **The thinned crowns are a visible dot pattern** on a low-density screen. It is finer on a phone. A blue-noise pattern would look softer.
 - **No level of detail.** Fully zoomed out, every tuft is still drawn (about 100–130k triangles). It is within budget; if a phone struggles, drop ground cover when zoomed out first.
 - **Zone debug lines** float over the flattened fringe.
 - **The night has no sky of its own yet.** The camera looks down at a map, so there are no stars or moon to see. Candidates for milestone 6: stars reflected in still water, fireflies, mist at dawn.
@@ -277,10 +296,13 @@ The order is by how much each step decides the look of everything after it. Each
 - **`.claude/launch.json` gained a `client-visual` entry** (the client on port 5174) so this worktree can run beside the main checkout.
 - **Sea and lake are the same tile**, so reed beds grow on sea shores as well as lake shores. Telling them apart needs either a client-side flood fill or a worldgen change.
 - **Paving a tile clears what grew on it**, and un-paving brings the same plants back, because plants come from the seed and position.
+- **A new terrain generator (M4c) is being built on another branch** (Sid, 2026-11-12). It adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles. When it is merged, the fixed screenshot spots will show different land, the `adorn` rules in `terrain.ts` will need rules for the new tiles, and the sea-and-lake finding above goes away.
 - **`main` has moved ahead of this branch** (found in milestone 3). It merged milestones 1 and 2 and the M6 scale work, which raised `PROTOCOL_VERSION` from 6 to 7. This branch still speaks 6. Two consequences: this worktree's client cannot join the main checkout's signal server (it runs solo, which is all the visual work needs), and `npm run e2e` here reuses that server on :8787 and fails every test on the version mismatch alone. Milestone 3's e2e run was therefore made against this worktree's own signal server on another port. Merging `main` into this branch would fix both; that is Sid's call. `main` also touched `CLAUDE.md`, `debug.ts` and `main.ts`, which milestone 3 edits too.
 
 ### Measured performance
 On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+
+**After milestone 4** the wind added no draw calls, triangles, textures or passes. It adds vertex work: about six sines for each foliage vertex and two for each water vertex. At the hills spot, fully zoomed out (140k triangles, 77 draw calls in that run), a frame took 2.65–2.9 ms, against 2.5–2.65 ms in milestone 3's run. That difference is inside this machine's run-to-run drift, so the cost here is at most about 0.2 ms. A phone's cost is unknown. Calm and breezy cost the same (the shader does the same work either way).
 
 **After milestone 3** the day/night cycle added nothing measurable: no draw calls, no triangles, no textures and no passes. At the hills spot, fully zoomed out, a frame took 2.5–2.65 ms at golden hour and at noon and 2.5–2.6 ms at night with the lantern lit (146k triangles and 66 draw calls in that run, with the debug lines on). The lantern is a four-step loop in the vertex shaders and is skipped by day. Driving the light costs a few dozen multiplications a frame on the main thread.
 
@@ -318,3 +340,5 @@ World `vista`: `#w=vista&at=-444,-516` (coast, lake and forest), `#w=vista&at=74
 11. **Uneven hours:** the day lingers at dawn and through the golden hour and sunset, and hurries through noon and the night (about 10 of the 48 minutes are night).
 12. **Night is moonlit, blue-green and readable, never dark,** and the parchment itself dims to slate.
 13. **Every explorer carries a lantern** after sundown: a warm pool of light, which also makes other explorers visible from afar.
+14. **A wind that is never still and never rough in fair weather** (0.12 to 0.7), read from the wall clock, with gusts that cross grass, trees and water in turn.
+15. **Tree crowns thin to a scatter of pixels where they would hide your explorer.**
