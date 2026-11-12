@@ -1,6 +1,6 @@
 # Terra Ignota — M5 gameplay design
 
-**Status: decided with Sid on 2026-11-12.** Every answer is recorded in [section 14](#14-decisions). A few details were set without asking; they are listed in [section 15](#15-defaults-set-without-asking) and can be changed. Architecture is in [PLAN.md](PLAN.md); the look is in [ART_DIRECTION.md](ART_DIRECTION.md). Numbers (radii, costs, times) are starting values to tune in play.
+**Status: decided with Sid on 2026-11-12.** Every answer is recorded in [section 14](#14-decisions). A few details were set without asking; they are listed in [section 15](#15-defaults-set-without-asking), and Sid confirmed them too. Architecture is in [PLAN.md](PLAN.md); the look is in [ART_DIRECTION.md](ART_DIRECTION.md). Numbers (radii, costs, times) are starting values to tune in play.
 
 ## 0. The loop in one screen
 
@@ -499,7 +499,7 @@ All answered by Sid on 2026-11-12.
 
 ## 15. Defaults set without asking
 
-Details the answers above didn't settle. Each is a starting point; say the word to change one.
+Details the answers above didn't settle. **Sid confirmed all nine on 2026-11-12.**
 
 1. **Ownership and decay are enforced by the live host, not inside the merge rule.** Same strength as every other check today. A merge-level ownership rule would be stronger against modified clients, at the cost of a much more complex store.
 2. **Relics are permanent, even for their owner,** and a visit after day 60 doesn't revive one.
