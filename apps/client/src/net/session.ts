@@ -5,7 +5,6 @@ import {
   type TileOp, type Unreliable, type ZoneId,
 } from '@terra/shared';
 import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
-import type { HostingProfile } from './hosting.ts';
 import { Peer } from './peer.ts';
 import { SignalClient } from './signal.ts';
 
@@ -14,8 +13,9 @@ const INTERP_DELAY_MS = 100;
 const BUFFER_MS = 1000;
 /** A neighbouring zone's player disappears after this long without a position. */
 const FOREIGN_TTL_MS = 1000;
+const TICK_MS = 1000 / TICK_HZ;
 /** A host tick counts as late when it fires this much after the previous one. */
-const LATE_TICK_MS = 1.5 * (1000 / TICK_HZ);
+const LATE_TICK_MS = 1.5 * TICK_MS;
 /** How many recent host ticks the late-tick fraction covers. */
 const LATE_WINDOW = 100;
 /** Round-trip time assumed before any measurement arrives. */
@@ -37,6 +37,31 @@ interface BackupState {
 }
 
 export type Role = 'offline' | 'connecting' | 'host' | 'client';
+
+/**
+ * What a session needs from the device's hosting profile. The browser's is
+ * HostingProfile (hosting.ts); headless peers such as bots supply their own.
+ */
+export interface HostProfile {
+  /** The session sets this, to be called when something the directory should know changes. */
+  onChange: () => void;
+  setHosting(on: boolean): void;
+  metrics(rttMs: number, lateTicks: number): HostMetrics;
+}
+
+/** Counters a session keeps about itself, for the debug panel and the bot swarm's metrics. */
+export interface SessionStats {
+  /** As a client: snapshots received, and the player positions in them. */
+  snaps: number;
+  snapPlayers: number;
+  /** As a host: ticks run, time spent in them (total and the worst one), and how many started late. */
+  ticks: number;
+  tickMs: number;
+  tickMaxMs: number;
+  lateTicks: number;
+  /** Times this zone's host changed while we stayed in the zone (a failover or a hand-over). */
+  hostChanges: number;
+}
 
 interface Sample { t: number; x: number; y: number }
 
@@ -120,7 +145,7 @@ export interface SessionOptions {
   edits: TileEdits;
   /** Called for each op that changed the replica, to persist it. */
   onMerged(op: TileOp): void;
-  profile: HostingProfile;
+  profile: HostProfile;
   iceServers: RTCIceServer[];
   tiles: TileLookup;
   getSelf(): { x: number; y: number };
@@ -139,6 +164,7 @@ export class Session {
   /** The zone's backups as the directory last announced them, best first. */
   backups: string[] = [];
   readonly remotes = new Map<string, Remote>();
+  readonly stats: SessionStats = { snaps: 0, snapPlayers: 0, ticks: 0, tickMs: 0, tickMaxMs: 0, lateTicks: 0, hostChanges: 0 };
 
   private signal: SignalClient;
   // Client-side state
@@ -162,7 +188,9 @@ export class Session {
   private tick = 0;
   private lastTickT = 0;
   private late: boolean[] = [];
-  private timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setTimeout>;
+  /** When the next tick is due on the ideal 20 Hz timeline. */
+  private tickDue = performance.now();
   private statusTimer: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   // Round trip to the signal server
@@ -191,7 +219,7 @@ export class Session {
         if (this.role !== 'host' && !this.hostPeer?.isOpen) this.role = 'offline';
       },
     );
-    this.timer = setInterval(() => this.onTick(), 1000 / TICK_HZ);
+    this.timer = setTimeout(this.runTick, TICK_MS);
     this.statusTimer = setInterval(() => this.heartbeat(), STATUS_INTERVAL_MS);
     o.profile.onChange = () => this.sendStatus();
   }
@@ -390,6 +418,7 @@ export class Session {
       case 'host':
         if (m.zone !== this.zone) break; // Stale: about a zone we've left.
         this.backups = Array.isArray(m.backups) ? m.backups : [];
+        if (this.hostId && m.hostId !== this.hostId) this.stats.hostChanges++;
         if (!this.backups.includes(this.o.peerId) && m.hostId !== this.o.peerId) this.backupState = null;
         if (m.hostId === this.o.peerId) this.becomeHost();
         else this.becomeClient(m.hostId);
@@ -650,6 +679,8 @@ export class Session {
         const now = performance.now();
         this.snapTick = m.tick;
         this.snapT = now;
+        this.stats.snaps++;
+        this.stats.snapPlayers += m.p.length;
         for (const [id, x, y] of m.p) pushSample(this.remotes.get(id), now, x, y);
       },
     });
@@ -658,13 +689,29 @@ export class Session {
 
   // ---------------- tick ----------------
 
+  /**
+   * Run a tick and book the next one against the ideal timeline, not against
+   * now. Timers that fire late (Windows rounds Node's to about 16ms; busy tabs
+   * drift) then cost jitter, not tick rate. After a long stall the timeline
+   * restarts, so missed ticks aren't replayed in a burst.
+   */
+  private runTick = () => {
+    const now = performance.now();
+    this.tickDue += TICK_MS;
+    if (this.tickDue < now - TICK_MS) this.tickDue = now;
+    this.timer = setTimeout(this.runTick, Math.max(0, this.tickDue - now));
+    this.onTick();
+  };
+
   private onTick() {
     const self = this.o.getSelf();
     if (this.role === 'host') {
       this.tick++;
       const now = performance.now();
       if (this.lastTickT) {
-        this.late.push(now - this.lastTickT > LATE_TICK_MS);
+        const late = now - this.lastTickT > LATE_TICK_MS;
+        if (late) this.stats.lateTicks++;
+        this.late.push(late);
         if (this.late.length > LATE_WINDOW) this.late.shift();
       }
       this.lastTickT = now;
@@ -692,6 +739,10 @@ export class Session {
         };
         for (const id of this.backups) this.clients.get(id)?.peer.sendU(state);
       }
+      const spent = performance.now() - now;
+      this.stats.ticks++;
+      this.stats.tickMs += spent;
+      if (spent > this.stats.tickMaxMs) this.stats.tickMaxMs = spent;
     } else if (this.role === 'client' && this.hostPeer) {
       this.hostPeer.sendU({ t: 'pos', seq: this.seq++, x: round(self.x), y: round(self.y) });
       // The host has gone quiet: ask the directory to check on it.
@@ -799,7 +850,7 @@ export class Session {
   }
 
   close() {
-    clearInterval(this.timer);
+    clearTimeout(this.timer);
     clearInterval(this.statusTimer);
     clearTimeout(this.retryTimer);
     this.signal.close();

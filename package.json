@@ -8,6 +8,7 @@
     "dev:client": "npm -w @terra/client run dev",
     "dev:signal": "npm -w @terra/signal run dev",
     "dev:seed": "npm -w @terra/seed run dev",
+    "bots": "node apps/bots/src/bots.ts",
     "build": "npm -w @terra/client run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

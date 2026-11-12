@@ -1,4 +1,5 @@
 import type { Reliable, SignalData, Unreliable } from '@terra/shared';
+import { count, netStats } from './stats.ts';
 
 export interface PeerHandlers {
   onOpen(): void;
@@ -94,6 +95,7 @@ export class Peer {
     };
     ch.onclose = () => this.close();
     ch.onmessage = (e) => {
+      count(netStats.recv, ch.label, e.data.length);
       let m;
       try {
         m = JSON.parse(e.data);
@@ -110,17 +112,32 @@ export class Peer {
   }
 
   sendR(m: Reliable) {
-    if (this.r?.readyState === 'open') this.r.send(JSON.stringify(m));
+    if (this.r?.readyState !== 'open') return;
+    const data = JSON.stringify(m);
+    if (this.send(this.r, data)) count(netStats.sent, `r:${m.t}`, data.length);
   }
 
   sendU(m: Unreliable) {
     // Drop rather than queue when congested; positions are superseded anyway.
-    if (this.u?.readyState === 'open' && this.u.bufferedAmount < 64 * 1024) this.u.send(JSON.stringify(m));
+    if (this.u?.readyState !== 'open' || this.u.bufferedAmount >= 64 * 1024) return;
+    const data = JSON.stringify(m);
+    if (this.send(this.u, data)) count(netStats.sent, `u:${m.t}`, data.length);
+  }
+
+  /** Send, treating a channel that closed under us as a dropped message rather than an exception. */
+  private send(ch: RTCDataChannel, data: string): boolean {
+    try {
+      ch.send(data);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   close() {
     if (this.closed) return;
     this.closed = true;
+    if (!this.opened) netStats.connectFails++;
     clearTimeout(this.discoTimer);
     this.pc.close();
     this.h.onClose();
