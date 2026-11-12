@@ -116,6 +116,15 @@ export function tileAt(seed: number, x: number, y: number): Tile {
   return classify(seed, x, y, g.u, u10, u01, u11, g.inland, g.temp, g.rain, g.bog);
 }
 
+/**
+ * The tile a point would be if the ground around it were level: no cliffs, no scree. One sample where
+ * tileAt takes four, for maps drawn at many tiles per pixel. Not for rules: use tileAt.
+ */
+export function tileAtFlat(seed: number, x: number, y: number): Tile {
+  groundAt(seed, x, y, g);
+  return classify(seed, x, y, g.u, g.u, g.u, g.u, g.inland, g.temp, g.rain, g.bog);
+}
+
 const N = CHUNK + 1;
 const cornerU = new Float64Array(N * N), cornerInland = new Float64Array(N * N);
 const cornerTemp = new Float64Array(N * N), cornerRain = new Float64Array(N * N), cornerBog = new Float64Array(N * N);

@@ -1,12 +1,17 @@
-import { Tile, findSpawn, groundAt, heightOf, newGround, terrainHash, tileAt, worldSeed } from '@terra/shared';
+import { Tile, findSpawn, groundAt, heightOf, newGround, terrainHash, tileAt, tileAtFlat, worldSeed } from '@terra/shared';
 import { tileColor } from './render/atlas.ts';
 
 /**
  * A top-down overview of a world's generated terrain, for judging worldgen: `#map=1&w=<world>`.
  * Optional: `scale=<tiles per pixel>` (1-64, default 4) and `at=x,y` (centre; default the spawn).
  * Click to recentre, keys 1-7 or the buttons to change scale, "Walk here" opens the game at the centre.
- * It paints generated tiles only (no edits) in the atlas's flat colours, shaded by slope.
+ * It paints generated tiles only (no edits) in the atlas's flat colours, shaded by slope. Up to 4 tiles
+ * per pixel every pixel is a real tile; beyond that cliffs are too thin to show, so each pixel is the
+ * tile its spot would be on level ground (one sample instead of four), and relief shows in the shading.
  */
+
+/** Above this many tiles per pixel, cliffs are not drawn. */
+const CLIFFS_UP_TO = 4;
 
 const SCALES = [1, 2, 4, 8, 16, 32, 64];
 const NAMES = Object.fromEntries(Object.entries(Tile).map(([name, id]) => [id, name])) as Record<number, string>;
@@ -81,7 +86,12 @@ export function showOverview(world: string) {
   function paint() {
     const mine = ++job;
     const w = (canvas.width = innerWidth), h = (canvas.height = innerHeight);
-    const x0 = cx - Math.floor(w / 2) * scale, y0 = cy - Math.floor(h / 2) * scale;
+    // From 4 tiles per pixel up, pixels sit on the generator's lattice, which is much cheaper to sample.
+    const snap = scale >= 4 ? 4 : 1;
+    const x0 = Math.floor((cx - Math.floor(w / 2) * scale) / snap) * snap, y0 = Math.floor((cy - Math.floor(h / 2) * scale) / snap) * snap;
+    const kind = scale <= CLIFFS_UP_TO ? tileAt : tileAtFlat;
+    // Heights of the row above, for shading.
+    let above = new Float32Array(w + 1), here = new Float32Array(w + 1);
     const counts = new Map<number, number>();
     Object.assign(state, { done: false, cx, cy, scale, across: w * scale, share: {} });
     scaleButtons.forEach((b, i) => (b.style.fontWeight = SCALES[i] === scale ? '700' : '400'));
@@ -92,6 +102,7 @@ export function showOverview(world: string) {
       `${(w * scale).toLocaleString()} × ${(h * scale).toLocaleString()} tiles, ${scale} per pixel`,
       document.createElement('br'),
       `centre ${cx}, ${cy} · spawn ${Math.floor(spawn.x)}, ${Math.floor(spawn.y)}`,
+      ...(scale > CLIFFS_UP_TO ? [document.createElement('br'), 'cliffs are too thin to draw at this scale'] : []),
     );
     legend.textContent = 'painting…';
     const started = performance.now();
@@ -106,18 +117,18 @@ export function showOverview(world: string) {
         const y = y0 + row * scale;
         for (let i = 0; i < w; i++) {
           const x = x0 + i * scale;
-          const t = tileAt(seed, x, y);
+          const t = kind(seed, x, y);
           counts.set(t, (counts.get(t) ?? 0) + 1);
-          // Shade by slope, lit from the north-west. Water is flat.
+          // Shade by slope, lit from the north-west: ground that rises away from the light is bright. Water is flat.
           groundAt(seed, x, y, g);
-          const a = Math.max(0, heightOf(g.u));
-          groundAt(seed, x + scale, y + scale, g);
-          const shade = Math.min(1.3, Math.max(0.6, 1 + (0.55 * (Math.max(0, heightOf(g.u)) - a)) / scale));
+          const a = (here[i + 1] = Math.max(0, heightOf(g.u)));
+          const shade = row === 0 || i === 0 ? 1 : Math.min(1.3, Math.max(0.6, 1 + (0.55 * (a - above[i])) / scale));
           const c = tileColor(t), o = i * 4;
           d[o] = c[0] * shade; d[o + 1] = c[1] * shade; d[o + 2] = c[2] * shade; d[o + 3] = 255;
         }
         rows.push(img);
         row++;
+        [above, here] = [here, above];
       }
       rows.forEach((img, k) => ctx.putImageData(img, 0, first + k));
       if (row < h) return void setTimeout(slice, 0);
