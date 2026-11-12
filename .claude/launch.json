@@ -18,6 +18,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["-w", "@terra/client", "run", "dev", "--", "--port", "5174", "--strictPort"],
       "port": 5174
+    },
+    {
+      "name": "client-m4c",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["-w", "@terra/client", "run", "dev", "--", "--port", "5183", "--strictPort"],
+      "port": 5183
     }
   ]
 }

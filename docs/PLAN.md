@@ -31,7 +31,7 @@ infra/            docker-compose: signal + coturn + seed
 ```
 
 ## World & networking model
-- **Worldgen**: deterministic noise from the world seed. Each chunk is 32×32 tiles, and terrain is never sent over the network.
+- **Worldgen**: deterministic, from the world seed: layered climate and landform maps with curves over them (see "Natural terrain"). Each chunk is 32×32 tiles, and terrain is never sent over the network.
 - **Zones**: 8×8 chunks each. Every zone has one **host peer**, and players in that zone connect to it in a star (not a full mesh). Hosts of adjacent zones link to each other so players can see across borders.
 - **Host election**: deterministic, based on a score (desktop, foreground tab, uptime, RTT), with ties broken by public key. Mobile, battery-powered and backgrounded tabs are excluded. The seed peer hosts any zone that has no eligible host.
 - **Host migration**: the host streams snapshots to two backup peers. If the host drops, the next backup takes over within about 2s.
@@ -50,7 +50,7 @@ infra/            docker-compose: signal + coturn + seed
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
-| M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | Planned, not built. To be built before M5 (see "Natural terrain") |
+| M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | **Step 1 (layered maps) built** 2026-11-12, protocol 8: plains, ranges, cliffs, an ocean, separate lakes and six climates, with the same hash in Node, Chromium and Bun (JavaScriptCore). Firefox is still owed. **Step 2 (rivers) not built.** See "Natural terrain" |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
@@ -122,8 +122,8 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **A Node peer is a slow host.** For the seed to host zones (M7), node-datachannel's `send` cost applies: a bot host spent 5.5ms a tick on 24 clients on this machine.
 - **Node timers on Windows fire in steps of about 16ms**, so a 50ms interval ran at 16 Hz. Sessions now book each tick against an ideal timeline, which also keeps the rate under load in browsers.
 
-## Natural terrain (planned 2026-11-12, not built)
-**Why.** Today `tileAt` cuts one elevation noise and one moisture noise at fixed thresholds, the same everywhere. Every hill is the same kind of hill, all water is one kind of water, and the land reads as a blob. Sid wants terrain that looks like the natural world: rivers and streams shaped by gravity, steep mountains and sheer cliffs, wide plains with little relief, and oceans that are distinct from lakes and ponds.
+## Natural terrain (step 1 built 2026-11-12; step 2 planned)
+**Why.** Before M4c, `tileAt` cut one elevation noise and one moisture noise at fixed thresholds, the same everywhere. Every hill was the same kind of hill, all water was one kind of water, and the land read as a blob. Sid wants terrain that looks like the natural world: rivers and streams shaped by gravity, steep mountains and sheer cliffs, wide plains with little relief, and oceans that are distinct from lakes and ponds.
 
 **When.** Before the M5 build starts. M5's first slice wipes existing worlds anyway, and M5 then freezes where landmarks and resources go (`landmarkAt`, `nodeAt`), which sit on top of the terrain. Changing terrain after that moves everything players have found.
 
@@ -152,13 +152,85 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **Renderer:** sheer cliffs need vertical faces in the chunk mesh. New water kinds (river, lake, sea) and new biomes need colours and ground cover. This answers two of the visual foundation's findings: "worldgen has one climate" and "sea and lake are the same tile".
 - **Movement:** today any tile that isn't deep water, snow or a wall is walkable, however steep. Cliffs and rivers need rules in `step()`.
 - **M5 design:** bridges and steps already exist to cross deep water and snow, so rivers and cliffs give them more to do. Landmark and resource placement should be built on the new terrain.
-- **Chunk building in a worker** (a visual foundation finding) becomes necessary, not optional.
+- **Chunk building in a worker** (a visual foundation finding) was expected to become necessary. Step 1 turned out no slower than the old generator (see the measurements below), so it is not needed for terrain yet; step 2's region precompute will need one.
 
 **Decided (2026-11-12).**
 1. **Cliffs block.** Gentle and moderate slopes are walkable. Sheer cliff faces block like walls until a player builds Steps (from the M5 design). No slope-based slowing.
 2. **Streams wade, rivers block.** A stream is crossed slowly, like shallow water today. A river is deep and blocks until someone builds a Bridge or finds a ford. No current that carries the player; that could come later.
 3. **New ground, the core set.** Water: river, stream and lake, separate from sea. Land: cliff, plus four climate biomes: desert, tundra, marsh and conifer forest. Each needs its own look in the visual work.
 4. **Region size is measured, then picked.** The build tries sizes from about 1,000 to 4,000 tiles across and picks the largest whose first compute stays within a budget suited to a phone. The choice and the numbers get recorded here.
+
+### Step 1 as built (2026-11-12, protocol 8)
+The generator is `packages/shared/src/terrain.ts` (the maps and the height) and `worldgen.ts` (tiles, rules, spawn, the hash). To look at a world: `#map=1&w=<world>` in the client paints it top-down at 1 to 64 tiles per pixel (click to recentre, "Walk here" opens the game there).
+
+**The maps.** Each is noise at its own size; the sizes are the width of one feature, in tiles.
+| Map | Size | What it decides |
+|---|---|---|
+| Continent | 2,200, warped | Ocean against land. Water is sea where this map says so and nowhere else |
+| Erosion | 1,300 | Plains, hill country or a mountain range |
+| Ridges | 260 and 115, warped; 130 | Mountain chains, their spurs, and rolling ground |
+| Valleys | 520 | Broad cuts through high ground: the passes |
+| Terraces | 300 | Escarpments and mesas |
+| Basins | 190 | Hollows that hold lakes |
+| Temperature, rainfall | 2,600 and 1,700 | Climate. The middle of a continent is drier than its coasts |
+| Fine noise | 72 down to 9 | Rough coasts, ragged terrace edges, ribs and gullies on mountains |
+
+**Height** is a sum of curves over those maps: a beach and a slow rise inland; rolling ground that grows into hills as erosion falls; in mountain country a chain along every line where the ridge map crosses zero, with spurs that stand tall near the chain and die away from it, and low valleys between chains; terraces as a step about a tile and a half wide; a sea cliff on rugged coasts. Summits are squeezed to about 28 tiles tall.
+
+**Cliffs.** A tile is a cliff when its four corners differ by more than 1.2 tiles of height. That happens at terrace steps, on the upper flanks of chains and on rugged coasts. A terrace comes and goes along its length, and where its map changes slowly the step spreads into a ramp, so an escarpment is a run of cliff with ways up, not a closed ring.
+
+**Water.** Sea is the continent map. Lakes are basins in low country, at least a few tiles inland, more of them where it rains. Lake water never touches sea water (unit-tested). In step 1 every lake's surface is at sea level.
+
+**Biomes** come from temperature (which falls with altitude), rainfall and altitude: snow, bare rock, tundra, conifer forest, grass, broadleaf forest, meadow, desert, marsh (the wet fringe of a lake basin) and sand (sea beaches only). The snow line sits at elevation 0.75 in a temperate place, lower where it is cold (never below 0.35) and is absent where it is hot.
+
+**Tiles and rules.** New ids, appended: `Lake` 10, `Stream` 11, `River` 12, `Cliff` 13, `Desert` 14, `Tundra` 15, `Marsh` 16, `Conifer` 17, `LakeShallows` 18. `TILE_COUNT` is 19, so M5's `Bridge` and `Steps` take 19 and 20, and **M5's first slice takes protocol 9**.
+- Block: deep sea, deep lake (`Lake`), `River`, `Cliff`, snow, walls.
+- Wade (half speed): shallow sea, `LakeShallows`, `Stream`.
+- Everything else walks at full speed, marsh included.
+- `Stream` and `River` have their rules and colours but nothing generates them until step 2.
+- Rules depend on the tile only. `step()` no longer uses `Math.hypot`.
+
+**Determinism.** Only exact arithmetic decides a tile or a rule. The old noise built its 16 gradients with `Math.cos` and `Math.sin`, and `findSpawn` used them too; the gradients are now written out as literals and the spawn search walks square rings. A unit test fails if `noise.ts`, `terrain.ts`, `worldgen.ts`, `rng.ts` or `movement.ts` call any `Math` function outside the exact set. `terrainHash(seed)` hashes 12 whole chunks, 2,048 scattered tiles and the exact bits of 512 elevations; `node scripts/terrain-hash.ts` prints it.
+
+| Engine | Hash of world `golden` | How it was run |
+|---|---|---|
+| Node 22 (V8) | 4034505386 | unit test, pinned |
+| Chromium (Playwright 1.63, V8) | 4034505386 | e2e test `terrain.spec.ts`, also against a new world each run |
+| Bun 1.3.6 (JavaScriptCore, the engine in Safari) | 4034505386 | `bun scripts/terrain-hash.ts`, by hand; `terra` and `vista` matched too |
+| Firefox (SpiderMonkey), Safari itself | **owed** | Playwright's Firefox and WebKit aren't installed on the dev machine, and weren't downloaded |
+
+**Against the done-when.** One seed shows plains, ranges, cliffs, an ocean and separate lakes within a few thousand tiles: yes, and a unit test checks that all 15 generated tile kinds occur within 3,000 tiles of the spawn. The same hash in Node, Chromium and one other *browser* engine: Node and Chromium yes; the third engine is JavaScriptCore under Bun, not a browser, so a run in Firefox or Safari is still owed.
+
+**Measured** (the dev machine: Core i7-930, Windows 10, Node 22; old and new run back to back, median of 7 runs of 400 chunks, three repeats):
+| | Before | After |
+|---|---|---|
+| `generateChunk`, 32×32 tiles | 1.35–1.67 ms | 1.14–1.28 ms |
+| The renderer's height grid for a chunk (1,024 × `elevationAt`) | 0.86–1.03 ms | 0.67–0.76 ms |
+| `findSpawn` | not measured | 40 new worlds in 36 ms |
+| Overview, 1,400 × 900 tiles at 1 per pixel, headless Chromium | — | 4.6–4.8 s (about 3.7 µs a tile, with its shading sample) |
+
+So chunk generation is no slower than before, and step 1 does not need a worker. The slow maps are computed on a lattice every 4 tiles (29 noise calls a point, 81 points a chunk) and interpolated; each tile corner then costs 4 noise calls. The lattice is cached per 32-tile block, at most 512 blocks, about 3.3 MB. If the generator does move to a worker later (step 2's region precompute will need one): it has no DOM or Node dependency and its only state is that cache, so a worker can import it as it is; each thread keeps its own cache, and the main thread still needs tiles synchronously for `step()`, so it would keep its own copy too. No phone was measured.
+
+**Tile mix** (8 seeds, a 40,000-tile square each, sampled every 400 tiles): the sea is 35% of the world. Of the land: grass 24%, conifer forest 17%, tundra 15%, broadleaf forest 10%, desert 9%, meadow 8%, rock 5%, lakes 5% (deep 2.8%, shallows 1.9%), snow 3%, marsh 3%, sand 1.5%, cliff 0.6%. 6% of the land blocks movement (snow, deep lake, cliff).
+
+**Checked.** `npm run typecheck`, `npm test` (67 tests) and `npm run e2e` (15 tests, repeated 3 times) pass. A swarm of 30 bots over 2 zones ran stable on the new terrain: 17 zone crossings, no position corrected by a host.
+
+**Guessed, for Sid to judge.** Every size and threshold above was tuned by eye on two seeds (`terra`, `vista`) and a tally over eight: how much is ocean, how big a range is, how tall a cliff must be, where each biome starts. They are constants at the top of `terrain.ts` and in `classify` in `worldgen.ts`; changing any of them changes every world and the golden hash.
+
+**Findings (not built).**
+- **All lakes are at sea level.** A pure function can't know a mountain lake's surface height without filling its basin, which is step 2. When step 2 fills basins, lakes will sit at their own levels and the renderer, which draws all water at height 0, has to draw each lake at its own.
+- **Shared height and render height differ slightly.** Rules use `heightOf` (30·u·√u), which is exact. The renderer draws 30·u^1.6 (`heightFromElevation`). They agree at the top and differ by up to about 20% on low ground, so a cliff tile is always steep on screen but the 1.2-tile threshold isn't exactly what is drawn. The renderer could take `heightOf` from shared and they would match; that is two lines in files the visual work owns.
+- **Cliffs are slopes, not walls, on screen.** The chunk mesh is a heightfield, so a cliff is one steep tile-wide face in bare-earth colour. It reads as a cliff, but true vertical faces are visual work.
+- **Nothing checks that land is connected.** About 6% of land blocks (snow, cliffs, deep lakes). Chains have valleys between them and terraces have ramps, but a spot can still be ringed by cliffs. `findSpawn` only guarantees 6 clear tiles around the spawn. M5's Steps are the designed way through.
+- **M5's design was written for the old tiles.** Steps should also be buildable on `Cliff`, and Bridges on `Lake` and `River`. Wood comes from forest tiles: conifer forest needs the same. Landmark types "come from the generated tile", so the new tiles need landmark types or a fallback. The M5 design still says protocol 6 → 7.
+- **Marsh walks at full speed.** Wading through it would be natural; it wasn't one of the four decisions, so it is left out.
+- **The overview is slow at coarse scales on this machine** (about 15 s for a full window at 16 tiles per pixel): every pixel is a lattice point of its own there. It paints progressively.
+- **Every world starts mild.** See the decision log: the origin of every world is low, temperate land.
+
+**For step 2.** Nothing in step 1 argues against the plan. Three things to settle first:
+- **Rivers make the generator need its region.** Today any tile can be computed on its own. Once rivers are carved, a chunk's tiles depend on its region's precompute, which is planned for a worker. `step()` and host checks need tiles at once, so either the first compute of a region blocks, or tiles near an uncomputed region are provisional. This decides the region size as much as the phone budget does.
+- **Lake levels** (the first finding): step 2 should replace step 1's sea-level basins with filled ones, and the renderer needs per-lake water heights before that looks right.
+- **Build the region's coarse heightmap from `groundAt` on the 4-tile lattice.** A sample there costs one lattice point, so a 2,000-tile region at 4-tile spacing is 250,000 points, each about 30 noise calls.
 
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
@@ -209,6 +281,11 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Hosts of neighbouring zones (incl. diagonals) share one direct link, listed by the signal server | Players see across borders while clients still connect only to their own host. The server already knows every zone's host, so it sends each host its neighbours. The lower peer id dials, so each pair has one link. |
 | Art style: a low-poly diorama on a parchment map; unexplored land is blank parchment that inks in | It builds on the existing renderer, stays small for a PWA and makes the game's name the look. Details in ART_DIRECTION.md. |
 | The visual foundation (lighting, shaders, biomes, time of day, weather) is built before M5; bulk assets wait for the M5 mechanics | The foundation doesn't depend on mechanics. Props, icons and sounds do. |
+| A lake has two tiles, deep (`Lake`, blocks) and shallow (`LakeShallows`, waded), like the sea | Sid's rule is that deep water blocks and shallows wade. One lake tile would make every lake either a wall or a puddle. Reusing the sea's shallows tile would leave lake and sea the same tile at the shore, which is what the visual work asked to end. |
+| A cliff is a tile whose corners differ by more than 1.2 tiles of height, decided in shared code from an exact height (`heightOf`) | It blocks exactly the tiles that are drawn sheer. The renderer's own height curve uses `pow`, which engines may round differently, so rules can't use it. |
+| Snow never lies below a floor (elevation 0.35), however cold the climate | Snow blocks. Without the floor a cold region is one impassable ice cap. Cold lowlands are tundra, which can be walked. |
+| Every world is mild at its origin (land, low, temperate) | Gradient noise is zero at the origin, so every slow map is near its middle there. It is kept on purpose: a new player starts on open ground, with coasts and ranges a few hundred tiles out. |
+| The slow maps are computed every 4 tiles and interpolated; shaping happens per sample | It keeps chunk generation at the old cost. Thresholds, ridges and terrace steps are applied after interpolating, so cliff lines and crests stay sharp. |
 | Replace threshold-on-noise terrain with layered maps, then region-simulated rivers, before M5 | Sid wants terrain that looks natural. M5 wipes worlds at its first slice and then freezes landmark and resource placement, so before M5 is the cheapest time. |
 | Cliffs block, streams wade, rivers block | They turn terrain into routes and obstacles, and give the M5 Steps and Bridges a purpose inland. Slope slowing and river currents were left out to keep `step()` and the host's checks simple. |
 | New terrain adds river, stream, lake, cliff, desert, tundra, marsh and conifer forest | Enough that climates feel different, while staying a set the visuals can do well. Cohesion over variety. |

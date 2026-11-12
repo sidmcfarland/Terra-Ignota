@@ -23,7 +23,8 @@ export function step(
   dir: { x: number; y: number },
   dt: number,
 ): { x: number; y: number } {
-  const len = Math.hypot(dir.x, dir.y);
+  // Not Math.hypot: engines may round it differently, and this is a rule both sides compute.
+  const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
   if (len === 0) return pos;
   const k = Math.min(1, len) / len;
   const speed = PLAYER_SPEED * (isWading(tile(Math.floor(pos.x), Math.floor(pos.y))) ? WADE_FACTOR : 1);

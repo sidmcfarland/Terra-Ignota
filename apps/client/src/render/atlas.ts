@@ -14,8 +14,20 @@ const BASE: Record<number, [number, number, number]> = {
   [Tile.Snow]: [232, 238, 242],
   [Tile.Path]: [168, 140, 104],
   [Tile.Wall]: [84, 82, 78],
+  // M4c natural terrain: plain placeholder colours.
+  [Tile.Lake]: [36, 92, 118],
+  [Tile.Stream]: [92, 160, 188],
+  [Tile.River]: [50, 118, 168],
+  [Tile.Cliff]: [78, 66, 60],
+  [Tile.Desert]: [226, 200, 130],
+  [Tile.Tundra]: [160, 160, 132],
+  [Tile.Marsh]: [86, 120, 96],
+  [Tile.Conifer]: [44, 96, 72],
+  [Tile.LakeShallows]: [72, 150, 160],
 };
 if (Object.keys(BASE).length !== TILE_COUNT) throw new Error('missing tile colors');
+/** A tile's flat map colour, sRGB 0-255, for other top-down views (the terrain overview). */
+export const tileColor = (t: number): readonly [number, number, number] => BASE[t];
 
 const FLOWERS: Array<[number, number, number]> = [[230, 220, 120], [235, 150, 170], [240, 240, 240], [170, 150, 230]];
 
