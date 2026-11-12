@@ -69,6 +69,7 @@ export function parseSeason(s: string | null | undefined): number | null {
 /** The weathers by name, for `#weather=` and for comparable screenshots. */
 export const WEATHERS: Record<string, Weather> = {
   clear: { cloud: 0, rain: 0, snow: 0, fog: 0, storm: 0 },
+  broken: { cloud: 0.45, rain: 0, snow: 0, fog: 0, storm: 0 },
   overcast: { cloud: 1, rain: 0, snow: 0, fog: 0, storm: 0 },
   rain: { cloud: 1, rain: 0.75, snow: 0, fog: 0, storm: 0 },
   storm: { cloud: 1, rain: 1, snow: 0, fog: 0, storm: 1 },

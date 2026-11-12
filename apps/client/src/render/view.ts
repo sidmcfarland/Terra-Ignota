@@ -14,6 +14,8 @@ import {
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
 import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
+import type { Air } from './air.ts';
+import { Motes } from './motes.ts';
 import { Precipitation } from './precip.ts';
 import { Terrain, WATER_Y } from './terrain.ts';
 import { WEATHERS, type Season, type Weather } from './weather.ts';
@@ -124,6 +126,8 @@ export class GameView {
   private terrain: Terrain;
   private zoneLines: ZoneLines;
   private precip = new Precipitation();
+  private motes = new Motes();
+  private heightAt = (x: number, y: number) => this.terrain.heightAt(x, y);
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -154,7 +158,7 @@ export class GameView {
     this.paper.renderOrder = 1;
     this.paper.frustumCulled = false;
     this.scene.add(this.paper);
-    this.scene.add(this.precip.mesh);
+    this.scene.add(this.precip.mesh, this.motes.mesh);
 
     this.labels.className = 'labels3d';
     document.body.appendChild(this.labels);
@@ -192,6 +196,11 @@ export class GameView {
   /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
   setWind(strength: number | null) {
     this.look.fixedWind = strength;
+  }
+
+  /** What hangs in the air right now: dust, leaves, fireflies, heat, stars, dawn mist (each 0–1). */
+  get air(): Air {
+    return this.look.air;
   }
 
   /** The weather and the season being shown. */
@@ -258,6 +267,7 @@ export class GameView {
     this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
     this.precip.update(this.look.weather, this.look.wind, groundY, radius, dt);
+    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.heightAt, WATER_Y);
 
     const seen = new Set<string>();
     const v = new Vector3();

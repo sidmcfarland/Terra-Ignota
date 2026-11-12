@@ -102,7 +102,7 @@ function perfLines({ perf, hour, wind, weather, season }: DebugState): string[] 
     `CHUNKS ${perf.chunkBuilds} built  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms`,
     `TIME   ${clock}  ·  #time=dawn|morning|noon|afternoon|golden|sunset|dusk|night or an hour holds it`,
     `WIND   ${(wind ?? 0).toFixed(2)}  ·  #wind=0..1 holds it`,
-    `SKY    ${amounts(weather)}  ·  #weather=clear|overcast|rain|storm|fog|snow holds it`,
+    `SKY    ${amounts(weather)}  ·  #weather=clear|broken|overcast|rain|storm|fog|snow holds it`,
     `YEAR   ${amounts(season)}  ·  #season=spring|summer|autumn|winter holds it`,
     '',
   ];
