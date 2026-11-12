@@ -355,7 +355,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Each new biome is told apart by its ground first, its plants second, and by what is missing | A desert reads from its dunes and bare sand, tundra from frost and the lack of anything tall, marsh from dark pools and sedge. No new models were needed, so the world stays one family. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Lakes differ from the sea in the water itself: greener, darker, stiller, edged with reeds and no surf | A lake and a sea bay should never be confused at a glance, and the difference should be visible from far out. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Cliffs show bedding: level seams drawn by the ground shader from the height of each pixel | A bare steep facet is a grey smear. Seams that run level across a whole escarpment make it read as rock and as one continuous wall. It costs a few operations per pixel and no texture. Approved by Sid, 2026-11-12. |
-| 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Awaiting Sid. |
+| 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Decided by Sid, 2026-11-12: "Keep it ragged". |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
@@ -385,7 +385,7 @@ The order is by how much each step decides the look of everything after it. Each
 
 ### Kept for later (found along the way)
 - **Chunk generation belongs in a worker.** This is the biggest known risk to 60 fps on a phone: building a chunk's mesh takes about 4 to 5 ms here on a desktop, plus generating its tiles and heights, so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame, which is not a fix. **On hold (Sid, 2026-11-12):** M4c step 2 is adding a worker for river regions, so this waits until that is merged and then shares it.
-- **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do.
+- **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do. **Sid chose to keep it this way (2026-11-12): "Keep it ragged".** This is settled, not a loose end.
 - **A diagonal terrace is a run of short walls and banks,** not one straight face, because each wall has to end on a tile's edge. It reads as a rocky step.
 - **Walls cast no shadow of their own.** Shadows are still baked from the height field, which sees the cliff as the slope it used to be. The shade is roughly right and softer than a sheer face would cast.
 - **A waterfall is a ramp, not a fall.** Where a river drops several tiles in one, the water is one steep facet of streaming foam. A sheer fall would need the cliff builder to carry water.
@@ -576,9 +576,11 @@ Sid answered every item that was waiting, through the coordinating session. The 
 **Overtaken**
 - Item 4 (late-afternoon default light) by the day/night cycle, and item 9 (reeds on sea shores) by milestone 7.
 
+**Decided later**
+- **The sheer cliffs' rim** (item 33): "Keep it ragged". Walkable ground beside a cliff stays at its true heights, as built. No change.
+
 ### Waiting for Sid
 34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
 35. **A visible current on rivers and streams,** as slow streaks carried downstream.
 36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
 37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
-33. **Sheer cliffs as built:** one vertical face along the drop, grass to the edge, the beach to the foot, and open ground left at its true heights (so the rim is slightly ragged). The alternative is to level the ground beside a cliff as well, which is cleaner but draws walkable tiles flatter than they are.
