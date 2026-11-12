@@ -15,6 +15,8 @@ const MIN_ZOOM = 8, MAX_ZOOM = 48;
 
 async function main() {
   const cfg = loadConfig();
+  // `#map=1` shows the top-down terrain overview instead of the game.
+  if (new URLSearchParams(location.hash.slice(1)).get('map') === '1') return (await import('./overview.ts')).showOverview(cfg.world);
   addEventListener('hashchange', () => {
     if (new URLSearchParams(location.hash.slice(1)).get('w') !== cfg.world) location.reload();
   });

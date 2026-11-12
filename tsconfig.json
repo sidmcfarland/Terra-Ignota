@@ -15,5 +15,5 @@
     "noUnusedLocals": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["packages/*/src", "apps/*/src", "apps/*/vite.config.ts", "tests", "playwright.config.ts", "vitest.config.ts"]
+  "include": ["packages/*/src", "apps/*/src", "apps/*/vite.config.ts", "tests", "scripts", "playwright.config.ts", "vitest.config.ts"]
 }

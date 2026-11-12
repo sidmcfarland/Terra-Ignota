@@ -40,6 +40,16 @@ const GROUND: Record<number, readonly [RGB, RGB]> = {
   [Tile.Snow]: [[232, 232, 228], [244, 240, 230]],
   [Tile.Path]: [[184, 156, 116], [184, 156, 116]],
   [Tile.Wall]: [[104, 98, 90], [104, 98, 90]],
+  // M4c natural terrain: plain placeholder colours. The look of these is the visual work's to design.
+  [Tile.Lake]: [[46, 80, 92], [54, 90, 98]],
+  [Tile.Stream]: [[140, 164, 150], [160, 174, 152]],
+  [Tile.River]: [[52, 86, 104], [60, 96, 110]],
+  [Tile.Cliff]: [[112, 102, 94], [128, 116, 104]],
+  [Tile.Desert]: [[212, 184, 128], [228, 200, 142]],
+  [Tile.Tundra]: [[150, 152, 128], [170, 166, 140]],
+  [Tile.Marsh]: [[98, 122, 84], [116, 132, 88]],
+  [Tile.Conifer]: [[66, 104, 78], [78, 112, 80]],
+  [Tile.LakeShallows]: [[136, 160, 142], [158, 172, 146]],
 };
 if (Object.keys(GROUND).length !== TILE_COUNT) throw new Error('missing tile colors');
 /** The same table laid flat for the chunk builder: per tile, the deep tone then the step to the sun-bleached one. */
