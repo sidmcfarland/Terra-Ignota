@@ -61,6 +61,14 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Meadow | `#9EB066` | `#BEBC70` | Golden, dry |
 | Rock | `#8C8276` | `#A09482` | Warm grey |
 | Snow | `#E8E8E4` | `#F4F0E6` | Warm white; its shadows turn blue from the sky fill |
+| Lake bed, deep | `#283E42` | `#304848` | Peat. Darker and greener than the sea bed |
+| Lake bed, shallows | `#7A8664` | `#92946E` | Silt and weed |
+| Marsh | `#566442` | `#768050` | Wet olive and moss. Dark pools `#384846` stand where it is lowest |
+| Conifer forest floor | `#4A5C42` | `#626648` | Needle litter: browner and darker than under broadleaves |
+| Desert | `#D4AA70` | `#E8C488` | Apricot and ochre, deeper than the pale beach. Dune ripples cross it |
+| Tundra | `#829074` | `#A28E6E` | Lichen green drifting into russet heath. Frost `#E2E8EE` lies in patches all year |
+| Cliff | `#A8967E` | `#BEAC92` | Warm buff stone with darker bedding seams |
+| Stream bed, river bed | `#969680`, `#3A4E54` | `#AAA488`, `#42585A` | Ready for M4c step 2; nothing generates them yet |
 | Path (player-made) | `#B89C74` | | Drawn crisp, never blended |
 | Wall (player-made) | `#68625A` | | Drawn crisp, never blended |
 | Bare earth (steep green slopes) | `#9E8666` | | Faces too steep to hold grass |
@@ -70,6 +78,8 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 |---|---|---|
 | Water, shallow | `#7FC0BD` | Blends to deep over 2.4 tiles of depth; 60–96% opaque |
 | Water, deep | `#2F6687` | |
+| Lake water, shallow | `#8FB89A` | Greener than the sea |
+| Lake water, deep | `#2A5458` | Darker and greener. A lake lies stiller than the sea and has only a thin pale line at its edge, no surf |
 | Shore foam | `#F4EFE2` | A thin line that breathes in and out |
 | Broadleaf crown | `#41653F` to `#8AA65A` | Ramp from the shaded underside to the sunlit top. Each tree is tinted a little cooler or warmer by where it stands |
 | Pine | `#2C4A3D` to `#587D5E` | Darker and bluer than broadleaf, so a stand of pine reads at a glance |
@@ -78,6 +88,10 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Stone | `#706860` to `#BCB2A0` | Mossy among grass (`#9EA678` on top); darker and wet in the water |
 | Reed | `#566C44` to `#BEB476`, seed head `#604430` | |
 | Marram (beach grass) tip | `#E6E0AE` | |
+| Desert: dry grass tip, sage, dead twigs, sandstone | `#E2CE96`, `#7C7A5C` to `#BAB488`, `#604E3E`, `#967050` to `#D4AA78` | Sparse, and gathered where the sand is darker |
+| Tundra: heath tip, dwarf shrub, lichened stone, cotton-grass | `#9E7868`, `#544E40` to `#806C56`, `#7C7E70` to `#BCC0AA`, `#F6F4EC` | Nothing stands tall |
+| Marsh sedge tip | `#B0AA68` | Tussocks; reeds in the pools; marsh marigold (the buttercup yellow) between |
+| Bilberry (conifer forest floor) | `#3A543E` to `#6C8458` | |
 
 **Grass is not its own colour.** A tuft takes the colour of the facet it grows from and lightens toward a tip colour (grass `#B2C470`, meadow `#E8D486`, fern `#749C58`), so it reads as the land's texture and not as something set on top.
 
@@ -253,7 +267,7 @@ The colours of the light change through the day. They are in "Time of day" below
 **How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles and chunk build times. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
 
 ## Where the renderer is today
-As of visual-foundation milestone 6 (2026-11-12). Update this section as the visual foundation lands.
+As of visual-foundation milestone 7 (2026-11-12). Update this section as the visual foundation lands.
 
 - `apps/client/src/render/look.ts`: **the look.** The palette, the shared uniforms (key light, sky fill, ground bounce, lanterns, the light on the parchment, grade, time, the known-world circle) and the master shaders every surface uses: ground, foliage (trees and ground cover), water, parchment, solid (avatars) and the soft blob shadow. New surfaces should be built from these, not from Three.js's stock materials, so they take the same light, lanterns, grade and ink-in.
 - `apps/client/src/render/air.ts`: **the atmosphere** (milestone 6): how much dust, leaf-fall, fireflies, heat, starlight and dawn mist the moment calls for, as plain numbers with unit tests. `apps/client/src/render/motes.ts` draws the specks: one instanced mesh, one draw call. See "Atmosphere".
@@ -272,7 +286,9 @@ As of visual-foundation milestone 6 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/view.ts`: orthographic isometric camera, the parchment plane, avatars and the performance counters. An avatar is a placeholder **turned playing piece** in the player's colour (eight flat sides, a darker foot) with an HTML name label. It takes the baked shade of the ground it stands on, and lays a soft shadow along the slope, away from the sun and longer when the sun is low.
 - `apps/client/src/render/atlas.ts`: a top-down 2D chunk painter, kept for the shared atlas (M5). Not used in-game yet.
 - `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
-- Biomes come from worldgen's tiles: deep water, water, sand, grass, forest, meadow, rock, snow.
+- **Biomes come from worldgen's tiles** (M4c): sea and lake (each deep and shallow), sand, grass, broadleaf forest, conifer forest, meadow, marsh, desert, tundra, rock, cliff and snow. Each has two ground tones, its own plants, and its own rules in `adorn`. Where two meet, the facets between them take a mix of both, so there are no hard borders except cliffs.
+- **Heights come from the shared rule's own curve** (`heightOf`), so a tile the rules call a cliff is drawn exactly as steep as the rule measured it.
+- **Trees outside the known world are not drawn.** A chunk thick with trees splits them into four quarters, and quarters wholly beyond the known world are skipped; the shader also stops early for any tree that is not inked in yet. This halved the triangles in a forest.
 - The HUD and debug panel are recoloured to parchment and sepia ink. Fonts and proper UI chrome are still to come.
 - There is no audio or character model yet.
 
@@ -306,6 +322,10 @@ As of visual-foundation milestone 6 (2026-11-12). Update this section as the vis
 | 2026-11-12 | The atmosphere has no clock of its own: every layer follows from the hour, weather, season and wind | Fireflies on a warm still night and mist at an autumn dawn feel right because they are consequences, not a random schedule. It also keeps every explorer's view the same. Awaiting Sid. |
 | 2026-11-12 | Light shafts are done as cloud shadows on the land and beams in the mist, not as volumes in the air | The camera looks down at a map, so there is no sky to hang shafts from. Both are a few sines in shaders that already run. Awaiting Sid. |
 | 2026-11-12 | Heat is a waver in the light, not a screen distortion | It keeps the renderer at no full-screen passes. Awaiting Sid. |
+| 2026-11-12 | Each new biome is told apart by its ground first, its plants second, and by what is missing | A desert reads from its dunes and bare sand, tundra from frost and the lack of anything tall, marsh from dark pools and sedge. No new models were needed, so the world stays one family. Awaiting Sid. |
+| 2026-11-12 | Lakes differ from the sea in the water itself: greener, darker, stiller, edged with reeds and no surf | A lake and a sea bay should never be confused at a glance, and the difference should be visible from far out. Awaiting Sid. |
+| 2026-11-12 | Cliffs show bedding: level seams drawn by the ground shader from the height of each pixel | A bare steep facet is a grey smear. Seams that run level across a whole escarpment make it read as rock and as one continuous wall. It costs a few operations per pixel and no texture. Awaiting Sid. |
+| 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Awaiting Sid. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Awaiting Sid. |
 
@@ -329,7 +349,7 @@ The order is by how much each step decides the look of everything after it. Each
 | 4 | **Wind** and foliage sway, plus foliage detail | Needs the foliage from 2. Wind is one shared field that weather (5) then drives. | **Done** |
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
-| 7 | **More biomes** and the transitions between them | Reuses everything above. See the finding below: worldgen has one climate today. | **On hold** until M4c is merged (Sid, 2026-11-12) |
+| 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
 | 8 | **Finishing:** variations, extra effects, loose ends from the list below | Polish last. | Next, while 7 is on hold |
 
 ### Kept for later (found along the way)
@@ -346,6 +366,9 @@ The order is by how much each step decides the look of everything after it. Each
 - **Rain is not stopped by tree crowns or hills:** a streak can be seen falling through a canopy.
 - **Lanterns do not come on in a dark storm by day.**
 - **The thinned crowns are a visible dot pattern** on a low-density screen. It is finer on a phone. A blue-noise pattern would look softer.
+- **No new tree for the new biomes.** Conifer forest uses the existing pine, taller and closer. A birch for the tundra's edge or a thorn tree for the desert would add variety; neither was needed to tell the biomes apart.
+- **The desert has no cactus or palm.** It is dry scrub, which suits a temperate map. An oasis (palms by desert water) could come when rivers do.
+- **Snow on tundra is the same as snow anywhere.** Tundra should hold snow earlier and longer than the lowlands. That needs a per-vertex climate value.
 - **No level of detail.** Fully zoomed out, every tuft is still drawn (about 100–130k triangles). It is within budget; if a phone struggles, drop ground cover when zoomed out first.
 - **Zone debug lines** float over the flattened fringe.
 - **Fireflies and dust do not know what is under them** beyond its height: fireflies drift over open water and sand as readily as over grass.
@@ -358,16 +381,34 @@ The order is by how much each step decides the look of everything after it. Each
 - **A trail of explored land** that stays inked-in for the session would show the idea better than a moving circle. It overlaps M5's fog of war, so it needs Sid's say-so.
 
 ### Findings for Sid
-- **Worldgen has one climate.** `tileAt` makes eight tiles from elevation and moisture, the same everywhere. "Additional biomes" (milestone 7) can be done two ways: client-only variation of the existing tiles by region (for example birch against pine, heath against meadow, chosen from a large-scale noise), which changes no world and no rule; or new tiles and a temperature map in `packages/shared`, which changes every existing world. The first is in scope; the second needs a decision.
+- **Worldgen had one climate.** Answered by M4c (merged 2026-11-12): six climates, real cliffs, and lakes apart from the sea. Milestone 7 styles them.
 - **The shadow of a forest stays after a player paves it.** Shadows are baked from the generated tiles, not the edited ones, so that a chunk and its neighbours always agree at their seam. It's a soft shade and hard to notice.
 - **`.claude/launch.json` gained a `client-visual` entry** (the client on port 5174) so this worktree can run beside the main checkout.
-- **Sea and lake are the same tile**, so reed beds grow on sea shores as well as lake shores. Telling them apart needs either a client-side flood fill or a worldgen change.
+- **Sea and lake were the same tile.** Answered by M4c. Reed beds now grow only on lake shores and in marsh; the sea has none.
 - **Paving a tile clears what grew on it**, and un-paving brings the same plants back, because plants come from the seed and position.
-- **A new terrain generator (M4c) is being built on another branch** (Sid, 2026-11-12). It adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles. When it is merged, the fixed screenshot spots will show different land, the `adorn` rules in `terrain.ts` will need rules for the new tiles, and the sea-and-lake finding above goes away.
-- **`main` has moved ahead of this branch** (found in milestone 3). It merged milestones 1 and 2 and the M6 scale work, which raised `PROTOCOL_VERSION` from 6 to 7. This branch still speaks 6. Two consequences: this worktree's client cannot join the main checkout's signal server (it runs solo, which is all the visual work needs), and `npm run e2e` here reuses that server on :8787 and fails every test on the version mismatch alone. Milestone 3's e2e run was therefore made against this worktree's own signal server on another port. Merging `main` into this branch would fix both; that is Sid's call. `main` also touched `CLAUDE.md`, `debug.ts` and `main.ts`, which milestone 3 edits too.
+- **The renderer drew the land on a different curve from the one the rules use** (found in milestone 7). M4c's shared rule calls a tile a cliff when its corners differ by more than 1.2 tiles on the curve `heightOf` (30·u^1.5). The renderer was still drawing with its own older curve (30·u^1.6), so a cliff was drawn a little less steep than the rule measured. The renderer now calls `heightOf`, so what blocks you is exactly what you see. Mountains are about 5% taller as a result.
+- **This branch is `main` plus milestone 7.** `main` was merged in on 2026-11-12 as a fast-forward (it already held milestones 1 to 6), which brought protocol 8. `npm run e2e` now takes its ports from the environment, so this worktree runs it beside the main checkout with `E2E_SIGNAL_PORT=8797 E2E_SEED_PORT=8798 E2E_CLIENT_PORT=4174 E2E_REUSE=0 npm run e2e`.
+- **Cliffs are steep slopes, not vertical faces.** The chunk mesh is a height field, so a cliff tile is one very steep pair of facets about a tile wide. It reads as a cliff, and the bedding helps, but a truly sheer wall needs side faces in the mesh. PLAN.md already lists this.
+- **Streams and rivers have colours but have not been seen.** Nothing generates them until M4c step 2, so their look is untested.
 
 ### Measured performance
 On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+
+**After milestone 7**, on the M4c terrain, fully zoomed out in a 1277×1234 window (larger than earlier milestones' 862×1234):
+
+| Spot | Draw calls | Triangles | Frame |
+|---|---|---|---|
+| Deep conifer forest (`144,48`) | 75 | 154k | 3.1–4.1 ms |
+| Conifer forest and lake (`144,-48`) | 82 | 140k | 3.6 ms |
+| Lake and marsh (`352,144`) | 61 | 103k | 3.2 ms |
+| Sea cliff (`276,-2172`) | 68 | 90k | 3.0 ms |
+| Tundra (`336,1776`) | 39 | 57k | 2.4 ms |
+| Desert (`-48,-720`) | 30 | 42k | 2.1 ms |
+| Budget | 150 | 300k | 12 ms on the phone |
+
+- **One regression, found and fixed.** Conifer forest first drew 249k–265k triangles at 4.5–5.1 ms: close to the triangle budget and the heaviest view yet. Most of those trees stood outside the known world, where they are drawn and then discarded. Trees are now split into quarters of a chunk and the quarters beyond the known world are skipped, the shader stops early for trees that are not inked in, and conifer density went from seven trees in ten tiles to six. That brought it to 140k–154k triangles and 3.1–4.1 ms, for 15 to 20 more draw calls.
+- **Chunk build, warm:** about 4.3 ms mean (5.4 ms worst) over 11 conifer-forest chunks, after the same changes; it was 6.7 ms before them. The slowest cold build in the session was 39 ms, which includes generating the terrain around it. Building in a worker is still the main thing owed for a phone.
+- The bedding seams add about six operations per ground pixel. That did not show here.
 
 **After milestone 6** the motes add one draw call and 320 triangles when they show; cloud shadows, mist beams, stars and heat add none. No textures or passes were added. At the hills spot, fully zoomed out (130k triangles, 63 draw calls), a frame took 2.8–3.1 ms on a clear summer afternoon and 3.1–3.3 ms with cloud shadows, dawn mist, fireflies, heat, falling leaves or snow at night. Milestone 5 measured 2.5–2.8 ms, so this is about 0.3 ms more, at the edge of this machine's run-to-run drift. Hiding the motes changed it by under 0.1 ms. The 160 height lookups a frame for the motes did not show in the main-thread time (0.8–0.9 ms a frame, as before).
 
@@ -395,7 +436,20 @@ After milestone 2, fully zoomed out (the whole known world in view, the worst ca
 - Milestone 1 measured 2.2 ms a frame at 1024×768, 3.7 ms at 2048×1536 and 0.8 ms of main-thread time per steady frame.
 
 ### Fixed spots for screenshots
-World `vista`: `#w=vista&at=-444,-516` (coast, lake and forest), `#w=vista&at=744,612` (hills, forest edge, pond), `#w=vista&at=816,48` (mountain with snow). Zoom out fully to see the diorama on its map. Add `&time=afternoon` (the light milestones 1 and 2 were shot in) or another name from "Time of day", so the light holds still.
+World `vista`, on the M4c terrain. Add `&time=afternoon&season=summer&weather=clear&wind=0.3` so the light, the year and the sky hold still.
+
+| Spot | Shows |
+|---|---|
+| `#w=vista&at=276,-2172` | A sea cliff with its bedding, conifers above, a cove below. The benchmark view |
+| `#w=vista&at=352,144` | A lake with marsh along its shore and conifers behind |
+| `#w=vista&at=144,-48` | Conifer forest meeting a lake |
+| `#w=vista&at=144,48` | Deep conifer forest. The heaviest view to draw |
+| `#w=vista&at=-48,-720` | Desert dunes |
+| `#w=vista&at=336,1776` | Tundra with frost patches |
+| `#w=vista&at=-1524,-1020` | Terrace cliffs stepping through grassland |
+| `#w=vista&at=1968,1200` | A sandy sea coast |
+
+The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show different land now. Zoom out fully to see the diorama on its map.
 
 ### Waiting for Sid
 1. **The refined palette** (above): sage and olive greens, warm stone, teal water. Approve or steer.
@@ -424,3 +478,9 @@ World `vista`: `#w=vista&at=-444,-516` (coast, lake and forest), `#w=vista&at=74
 24. **Stars shown in the water,** since this camera never sees the sky.
 25. **Heat as a waver in the light,** keeping the renderer at no full-screen passes. This is the effect I am least sure reads as intended: judge it in motion with `#season=summer&time=12.5&wind=0.1&weather=clear`.
 26. **Leaves fall everywhere in autumn,** not only near trees.
+27. **Lake water greener, darker and stiller than the sea,** with reeds on lake shores only.
+28. **Cliffs in warm buff stone with level bedding seams.** A cliff keeps a little of the land it cuts through, so a mesa in the desert is redder than an escarpment in grassland.
+29. **Desert as apricot dunes with sparse dry scrub,** no cactus.
+30. **Tundra as lichen green and russet with frost patches,** cotton-grass and nothing tall.
+31. **Marsh as dark wet olive with pools, sedge tussocks and reeds.**
+32. **Conifer forest as close, tall pines on dark needle litter** (six trees to every ten tiles; lowered from seven to keep the heaviest view inside the budget).

@@ -14,16 +14,16 @@ const BASE: Record<number, [number, number, number]> = {
   [Tile.Snow]: [232, 238, 242],
   [Tile.Path]: [168, 140, 104],
   [Tile.Wall]: [84, 82, 78],
-  // M4c natural terrain: plain placeholder colours.
-  [Tile.Lake]: [36, 92, 118],
-  [Tile.Stream]: [92, 160, 188],
-  [Tile.River]: [50, 118, 168],
-  [Tile.Cliff]: [78, 66, 60],
-  [Tile.Desert]: [226, 200, 130],
-  [Tile.Tundra]: [160, 160, 132],
-  [Tile.Marsh]: [86, 120, 96],
-  [Tile.Conifer]: [44, 96, 72],
-  [Tile.LakeShallows]: [72, 150, 160],
+  // Natural terrain (M4c), in the flat-map versions of the colours the 3D view uses (visual-foundation milestone 7).
+  [Tile.Lake]: [58, 104, 104],
+  [Tile.Stream]: [126, 178, 176],
+  [Tile.River]: [62, 112, 132],
+  [Tile.Cliff]: [150, 132, 112],
+  [Tile.Desert]: [222, 184, 124],
+  [Tile.Tundra]: [150, 140, 112],
+  [Tile.Marsh]: [98, 112, 72],
+  [Tile.Conifer]: [62, 92, 70],
+  [Tile.LakeShallows]: [134, 176, 150],
 };
 if (Object.keys(BASE).length !== TILE_COUNT) throw new Error('missing tile colors');
 /** A tile's flat map colour, sRGB 0-255, for other top-down views (the terrain overview). */

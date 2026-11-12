@@ -9,7 +9,7 @@ import {
   Quaternion,
   Vector3,
 } from 'three';
-import { CHUNK, SEA_LEVEL, Tile, TILE_COUNT, elevationAt, hash2, perlin, rand2, type TileCache } from '@terra/shared';
+import { CHUNK, SEA_LEVEL, Tile, TILE_COUNT, elevationAt, hash2, heightOf, perlin, rand2, type TileCache } from '@terra/shared';
 import { LIFT_UNIT, TREES, cover, rnd, seedRnd, type RGB } from './flora.ts';
 import { BAKE_EAST, BAKE_WEST, foliageMaterial, groundMaterial, waterMaterial } from './look.ts';
 
@@ -19,10 +19,12 @@ const BUILD_BUDGET_MS = 4;
 /** World height (in tiles) of the water surface. */
 export const WATER_Y = 0;
 
-/** Maps raw elevation to world height. Land rises faster with altitude; the seabed is shallower. */
+/**
+ * Maps raw elevation to world height. It is the shared rule's own curve (`heightOf`), so a tile the
+ * rules call a cliff is drawn exactly as steep as the rule measured it.
+ */
 export function heightFromElevation(e: number): number {
-  const x = e - SEA_LEVEL;
-  return x >= 0 ? 30 * Math.pow(x, 1.6) + 0.15 : x * 8;
+  return heightOf(e - SEA_LEVEL);
 }
 
 /**
@@ -40,16 +42,23 @@ const GROUND: Record<number, readonly [RGB, RGB]> = {
   [Tile.Snow]: [[232, 232, 228], [244, 240, 230]],
   [Tile.Path]: [[184, 156, 116], [184, 156, 116]],
   [Tile.Wall]: [[104, 98, 90], [104, 98, 90]],
-  // M4c natural terrain: plain placeholder colours. The look of these is the visual work's to design.
-  [Tile.Lake]: [[46, 80, 92], [54, 90, 98]],
-  [Tile.Stream]: [[140, 164, 150], [160, 174, 152]],
-  [Tile.River]: [[52, 86, 104], [60, 96, 110]],
-  [Tile.Cliff]: [[112, 102, 94], [128, 116, 104]],
-  [Tile.Desert]: [[212, 184, 128], [228, 200, 142]],
-  [Tile.Tundra]: [[150, 152, 128], [170, 166, 140]],
-  [Tile.Marsh]: [[98, 122, 84], [116, 132, 88]],
-  [Tile.Conifer]: [[66, 104, 78], [78, 112, 80]],
-  [Tile.LakeShallows]: [[136, 160, 142], [158, 172, 146]],
+  // Natural terrain (M4c), styled in visual-foundation milestone 7. See docs/ART_DIRECTION.md.
+  // Lake beds are peat and silt, darker and greener than the sandy sea bed.
+  [Tile.Lake]: [[40, 62, 66], [48, 72, 72]],
+  [Tile.LakeShallows]: [[122, 134, 100], [146, 148, 110]],
+  // Rivers arrive with M4c step 2: a pebbly stream bed and a dark river bed, ready for them.
+  [Tile.Stream]: [[150, 150, 128], [170, 164, 136]],
+  [Tile.River]: [[58, 78, 84], [66, 88, 90]],
+  // Cliff: warm buff stone. Its bedding is drawn by the ground shader.
+  [Tile.Cliff]: [[168, 150, 126], [190, 172, 146]],
+  // Desert: apricot and ochre, deeper than the pale beach.
+  [Tile.Desert]: [[212, 170, 112], [232, 196, 136]],
+  // Tundra: lichen green drifting into russet heath.
+  [Tile.Tundra]: [[130, 144, 116], [162, 142, 110]],
+  // Marsh: wet olive and moss, browner and darker than grass.
+  [Tile.Marsh]: [[86, 100, 66], [118, 128, 80]],
+  // Conifer forest floor: needle litter, browner and darker than under broadleaves.
+  [Tile.Conifer]: [[74, 92, 66], [98, 102, 72]],
 };
 if (Object.keys(GROUND).length !== TILE_COUNT) throw new Error('missing tile colors');
 /** The same table laid flat for the chunk builder: per tile, the deep tone then the step to the sun-bleached one. */
@@ -65,6 +74,8 @@ const SCARP_STONE: RGB = [118, 108, 98];
 
 /** Tile corners are nudged this far (in tiles) off the grid, so the land reads as hand-cut, not gridded. */
 const JITTER = 0.16;
+/** A chunk with at least this many trees of one kind draws them as four quarters, each culled on its own. */
+const SPLIT_TREES = 100;
 /** Extra height forest adds when it shades the land behind it. */
 const CANOPY = 1.0;
 
@@ -114,6 +125,21 @@ const SNOW_STONE: readonly [RGB, RGB] = [[108, 100, 92], [150, 144, 136]];
 const MOSSY: readonly [RGB, RGB] = [[108, 104, 92], [158, 166, 120]];
 const PEBBLE: readonly [RGB, RGB] = [[150, 140, 124], [206, 198, 180]];
 const WET_STONE: readonly [RGB, RGB] = [[84, 88, 86], [150, 148, 138]];
+// Desert: bleached grass, grey sage, dead shrubs and ochre stone.
+const DRY_TIP: RGB = [226, 206, 150];
+const SAGE: readonly [RGB, RGB] = [[124, 122, 92], [186, 180, 136]];
+const TWIG: RGB = [96, 78, 62];
+const SANDSTONE: readonly [RGB, RGB] = [[150, 112, 80], [212, 170, 120]];
+// Tundra: russet heath, dwarf shrubs, lichened stone and cotton-grass.
+const HEATH_TIP: RGB = [158, 120, 104];
+const HEATH_BUSH: readonly [RGB, RGB] = [[84, 78, 64], [128, 108, 86]];
+const LICHEN: readonly [RGB, RGB] = [[124, 126, 112], [188, 192, 170]];
+const COTTON: RGB = [246, 244, 236];
+// Marsh sedge, and the low bushes of the conifer forest floor.
+const SEDGE_TIP: RGB = [176, 170, 104];
+const BILBERRY: readonly [RGB, RGB] = [[58, 84, 62], [108, 132, 88]];
+/** Frost that lies in the tundra's hollows all year, and the dark pools that stand in a marsh. */
+const FROST: RGB = [226, 232, 238], POOL: RGB = [56, 72, 70];
 /** Flowers stay paler than any explorer's colour. Oxeye white, buttercup, harebell, and sea thrift by the shore. */
 const WHITE: RGB = [244, 238, 220], YELLOW: RGB = [236, 204, 96], LILAC: RGB = [172, 160, 214], THRIFT: RGB = [226, 170, 184];
 
@@ -173,6 +199,8 @@ const cornerZ = new Float32Array(N * N);
 const cornerTone = new Float32Array(N * N);
 const cornerDrift = new Float32Array(N * N);
 const cornerSteep = new Float32Array(N * N);
+/** 1 at corners that touch lake water, 0 elsewhere (the sea included). */
+const cornerLake = new Float32Array(N * N);
 /** The slow noises are sampled every LAT tiles and interpolated; the lattice lines up across chunks, so seams match. */
 const LAT = 4, LN = CHUNK / LAT + 1;
 const latTone = new Float32Array(LN * LN);
@@ -291,6 +319,13 @@ export class Terrain {
       const [cx, cy] = key.split(',').map(Number);
       if (!near(cx, cy, 2 * CHUNK)) this.drop(key);
     }
+
+    // Trees standing wholly beyond the radius are not drawn: nothing out there is inked in.
+    for (const c of this.chunks.values()) for (const mesh of c.trees) {
+      const r = mesh.userData.rect as number[];
+      const dx = Math.max(r[0] - camX, 0, camX - r[2]), dy = Math.max(r[1] - camY, 0, camY - r[3]);
+      mesh.visible = dx * dx + dy * dy <= radius * radius;
+    }
   }
 
   /** Generate the world data a chunk's mesh needs. Returns false if it ran out of time; call again next frame. */
@@ -334,6 +369,7 @@ export class Terrain {
           const tile = t[row + i];
           winOcc[j * WIN + i] =
             tile === Tile.Forest ? h + CANOPY
+            : tile === Tile.Conifer ? h + CANOPY * 1.25
             : lone(seed, tile, cx * CHUNK + i - M, cy * CHUNK + j - M) ? h + CANOPY * 0.9
             : h;
         }
@@ -383,19 +419,40 @@ export class Terrain {
       // A second, slower drift decides which plants gather where: flower colonies, reed beds, stands of pine.
       const d0 = latDrift[l] + (latDrift[l + 1] - latDrift[l]) * fx, d1 = latDrift[l + LN] + (latDrift[l + LN + 1] - latDrift[l + LN]) * fx;
       cornerDrift[i] = d0 + (d1 - d0) * fy;
-      let r = 0, g = 0, b = 0, forest = 0;
+      let r = 0, g = 0, b = 0, forest = 0, desert = 0, tundra = 0, marsh = 0, lake = 0;
       for (let k = 0; k < 4; k++) {
         const t = basePad[(y + (k >> 1)) * P + x + (k & 1)], c = t * 6;
         r += GROUND_FLAT[c] + GROUND_FLAT[c + 3] * tone;
         g += GROUND_FLAT[c + 1] + GROUND_FLAT[c + 4] * tone;
         b += GROUND_FLAT[c + 2] + GROUND_FLAT[c + 5] * tone;
-        if (t === Tile.Forest) forest++;
+        if (t === Tile.Forest || t === Tile.Conifer) forest++;
+        else if (t === Tile.Desert) desert++;
+        else if (t === Tile.Tundra) tundra++;
+        else if (t === Tile.Marsh) marsh++;
+        else if (t === Tile.Lake || t === Tile.LakeShallows) lake++;
+      }
+      r /= 4; g /= 4; b /= 4;
+      cornerLake[i] = lake ? 1 : 0;
+      if (desert) {
+        // Dunes: broad ripples lying across the prevailing wind, bent by the slow drift so no two run alike.
+        const k = 1 + 0.06 * (desert / 4) * Math.sin((wx - wy) * 0.55 + 9 * cornerDrift[i]);
+        r *= k; g *= k; b *= k;
+      }
+      if (tundra) {
+        // Frost lies in patches all year.
+        const f = (tundra / 4) * smoothstep(0.04, 0.4, cornerDrift[i]) * 0.6;
+        r += (FROST[0] - r) * f; g += (FROST[1] - g) * f; b += (FROST[2] - b) * f;
+      }
+      if (marsh) {
+        // Dark pools stand between the tussocks where the ground is lowest and wettest.
+        const p = (marsh / 4) * smoothstep(0.36, 0.2, tone) * 0.7;
+        r += (POOL[0] - r) * p; g += (POOL[1] - g) * p; b += (POOL[2] - b) * p;
       }
       // The strand: sand the water has just left is darker and cooler than dry sand.
       const wet = smoothstep(0.36, 0.17, h) * smoothstep(-0.4, -0.1, h);
-      cornerColor[i * 3] = (r / 4) * (1 - 0.15 * wet);
-      cornerColor[i * 3 + 1] = (g / 4) * (1 - 0.12 * wet);
-      cornerColor[i * 3 + 2] = (b / 4) * (1 - 0.08 * wet);
+      cornerColor[i * 3] = r * (1 - 0.15 * wet);
+      cornerColor[i * 3 + 1] = g * (1 - 0.12 * wet);
+      cornerColor[i * 3 + 2] = b * (1 - 0.08 * wet);
 
       // Ambient occlusion: hollows and valley floors sit a little darker than ridges. So does ground under trees.
       const h0 = winGround[w];
@@ -414,7 +471,8 @@ export class Terrain {
     const count = CHUNK * CHUNK * 6;
     const pos = new Float32Array(count * 3);
     const nor = new Int8Array(count * 3);
-    const col = new Uint8Array(count * 3);
+    // rgb, then how strongly the rock's bedding shows on this facet (see the ground shader).
+    const col = new Uint8Array(count * 4);
     const shade = new Uint8Array(count * 3);
     let v = 0;
     const tri = (a: number, b: number, c: number, t: Tile, edited: boolean, jitter: number, slot: number) => {
@@ -425,7 +483,7 @@ export class Terrain {
       const nl = Math.hypot(nx, ny, nz) || 1;
       nx /= nl; ny /= nl; nz /= nl;
 
-      let r: number, g: number, bl: number;
+      let r: number, g: number, bl: number, strata = 0;
       if (edited) {
         // What players build stays crisp: exactly the tile, no blending into its neighbours.
         const c0 = GROUND[t][0];
@@ -434,15 +492,29 @@ export class Terrain {
         r = (cornerColor[a * 3] + cornerColor[b * 3] + cornerColor[c * 3]) / 3;
         g = (cornerColor[a * 3 + 1] + cornerColor[b * 3 + 1] + cornerColor[c * 3 + 1]) / 3;
         bl = (cornerColor[a * 3 + 2] + cornerColor[b * 3 + 2] + cornerColor[c * 3 + 2]) / 3;
-        // Steep faces above the waterline shed their cover.
-        if (t !== Tile.Water && t !== Tile.DeepWater && t !== Tile.Sand) {
+        // Steep faces above the waterline shed their cover. Dunes and beds under water keep theirs.
+        if (t !== Tile.Water && t !== Tile.DeepWater && t !== Tile.Sand && t !== Tile.Desert && t !== Tile.Lake && t !== Tile.LakeShallows) {
           // Mostly the lie of the land around the facet, so scarps run in bands along a hillside
           // instead of speckling it; partly the facet's own tilt, so the band's edge stays broken.
           const own = Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny);
           const slope = 0.7 * (cornerSteep[a] + cornerSteep[b] + cornerSteep[c]) / 3 + 0.3 * own;
-          const s = smoothstep(0.62, 1.05, slope) * 0.75;
-          const sc = t === Tile.Rock || t === Tile.Snow ? SCARP_STONE : SCARP_EARTH;
-          r += (sc[0] - r) * s; g += (sc[1] - g) * s; bl += (sc[2] - bl) * s;
+          if (t === Tile.Cliff) {
+            // A cliff is its own stone where it is sheer, and keeps a little of the land it cuts through:
+            // a mesa in the desert is redder than an escarpment in grassland.
+            const s = smoothstep(0.45, 0.9, slope), tone = (cornerTone[a] + cornerTone[b] + cornerTone[c]) / 3;
+            const lo = GROUND[Tile.Cliff][0], hi = GROUND[Tile.Cliff][1], m = s * 0.7;
+            r += (lo[0] + (hi[0] - lo[0]) * tone - r) * m;
+            g += (lo[1] + (hi[1] - lo[1]) * tone - g) * m;
+            bl += (lo[2] + (hi[2] - lo[2]) * tone - bl) * m;
+            strata = s;
+          } else {
+            const s = smoothstep(0.62, 1.05, slope) * 0.75;
+            const stone = t === Tile.Rock || t === Tile.Snow || t === Tile.Tundra;
+            const sc = stone ? SCARP_STONE : SCARP_EARTH;
+            r += (sc[0] - r) * s; g += (sc[1] - g) * s; bl += (sc[2] - bl) * s;
+            // Bare mountain rock shows its bedding too, more faintly.
+            if (stone) strata = s * 0.6;
+          }
         }
       }
       const k = 0.955 + jitter * 0.09;
@@ -451,11 +523,12 @@ export class Terrain {
       nx = Math.round(nx * 127); ny = Math.round(ny * 127); nz = Math.round(nz * 127);
       facet[slot] = nx; facet[slot + 1] = ny; facet[slot + 2] = nz;
       facet[slot + 3] = r; facet[slot + 4] = g; facet[slot + 5] = bl;
+      const bedding = Math.round(strata * 255);
       for (let n = 0; n < 3; n++) {
-        const i = n === 0 ? a : n === 1 ? b : c, o = v * 3;
+        const i = n === 0 ? a : n === 1 ? b : c, o = v * 3, o4 = v * 4;
         pos[o] = cornerX[i]; pos[o + 1] = hc[i]; pos[o + 2] = cornerZ[i];
         nor[o] = nx; nor[o + 1] = ny; nor[o + 2] = nz;
-        col[o] = r; col[o + 1] = g; col[o + 2] = bl;
+        col[o4] = r; col[o4 + 1] = g; col[o4 + 2] = bl; col[o4 + 3] = bedding;
         shade[o] = cornerShade[i * 3]; shade[o + 1] = cornerShade[i * 3 + 1]; shade[o + 2] = cornerShade[i * 3 + 2];
         v++;
       }
@@ -512,12 +585,36 @@ export class Terrain {
       (pine ? pineSpots : leafSpots).push(px, py, pz, size, rnd() * 6.2832, rnd());
     };
 
+    /** A bed of reeds at the spot last picked, some with seed heads. `depth` is how far under water their roots are. */
+    const reeds = (n: number, depth: number) => {
+      for (let k = 0; k < n; k++) {
+        const a = (rnd() * TURNS) | 0, ca = TURN_COS[a], sa = TURN_SIN[a], out = 0.3 * rnd();
+        const tall = depth + 0.4 + 0.45 * rnd(), x = px + ca * out, z = pz + sa * out;
+        const lx = (rnd() - 0.5) * 0.24 * tall, lz = (rnd() - 0.5) * 0.24 * tall;
+        cover.blade(x, py, z, -sa, ca, 0.034, lx, lz, tall, REED[0], REED[1], 0, 127, 0);
+        if (k < 2 && rnd() < 0.7) {
+          cover.blade(x + lx * 0.7, py + tall * 0.7, z + lz * 0.7, -sa, ca, 0.04, lx * 0.22, lz * 0.22, tall * 0.22,
+            CATTAIL, CATTAIL, 0, 127, 0, tall * 0.7);
+        }
+      }
+    };
+    /** A shrub that died standing: a few bare twigs splayed from one root. */
+    const deadShrub = () => {
+      spot();
+      if (facet[pk + 6] < 0.8) return;
+      const n = 5 + Math.floor(rnd() * 3);
+      for (let k = 0; k < n; k++) {
+        const a = (rnd() * TURNS) | 0, ca = TURN_COS[a], sa = TURN_SIN[a], h = 0.18 + 0.2 * rnd();
+        cover.blade(px, py, pz, -sa, ca, 0.022, ca * h * 1.1, sa * h * 1.1, h, TWIG, TWIG, facet[pk], facet[pk + 1], facet[pk + 2]);
+      }
+    };
+
     const adorn = (t: Tile, wx: number, wy: number, i00: number) => {
       seedRnd(hash2(seed ^ 0x51ed, wx, wy));
       const tone = cornerTone[i00], drift = cornerDrift[i00], h = hc[i00];
       cover.shade(cornerShade[i00 * 3], cornerShade[i00 * 3 + 1], cornerShade[i00 * 3 + 2]);
-      // Broadleaves in the lowlands, pines as the land climbs, and the odd stand of each among the other.
-      const piney = (h - 5.5) / 3 + drift * 1.7 + (rnd() - 0.5) * 0.6 > 0;
+      // Broadleaf woods hold the odd stand of pine, more of them as the land climbs.
+      const piney = (h - 9) / 4 + drift * 1.7 + (rnd() - 0.5) * 0.6 > 0;
       switch (t) {
         case Tile.Forest: {
           const r = rnd();
@@ -566,24 +663,14 @@ export class Terrain {
           if (h > 0.34 && rnd() < 0.04) blooms(2, THRIFT);
           break;
         }
-        case Tile.Water: {
+        case Tile.Water:
+        case Tile.LakeShallows: {
           const r = rnd();
-          // Reed beds hug the shore, in patches; a few stones break the surface further out.
-          if (h > -0.26 && drift > 0.02 && r < 0.78) {
-            const n = 6 + Math.floor(rnd() * 5);
+          // Reed beds hug a lake's shore, in patches. The sea has none: salt water keeps them out.
+          // A few stones break the surface of either.
+          if (t === Tile.LakeShallows && h > -0.3 && drift > -0.05 && r < 0.78) {
             spot();
-            const depth = Math.max(0, WATER_Y - py);
-            for (let k = 0; k < n; k++) {
-              const a = (rnd() * TURNS) | 0, ca = TURN_COS[a], sa = TURN_SIN[a], out = 0.3 * rnd();
-              const tall = depth + 0.4 + 0.45 * rnd(), x = px + ca * out, z = pz + sa * out;
-              const lx = (rnd() - 0.5) * 0.24 * tall, lz = (rnd() - 0.5) * 0.24 * tall;
-              cover.blade(x, py, z, -sa, ca, 0.034, lx, lz, tall, REED[0], REED[1], 0, 127, 0);
-              // Some carry a seed head near the top.
-              if (k < 2 && rnd() < 0.7) {
-                cover.blade(x + lx * 0.7, py + tall * 0.7, z + lz * 0.7, -sa, ca, 0.04, lx * 0.22, lz * 0.22, tall * 0.22,
-                  CATTAIL, CATTAIL, 0, 127, 0, tall * 0.7);
-              }
-            }
+            reeds(6 + Math.floor(rnd() * 5), Math.max(0, WATER_Y - py));
           } else if (h > -0.9 && r > 0.988) {
             // Only the top of a stone shows: it sits just under the surface, not on the seabed.
             spot();
@@ -606,6 +693,66 @@ export class Terrain {
           if (rnd() < 0.05) {
             const rr = 0.14 + 0.26 * rnd();
             lump(rr, rr * (0.7 + 0.5 * rnd()), SNOW_STONE, false);
+          }
+          break;
+        }
+        case Tile.Conifer: {
+          const r = rnd();
+          // Pines stand close and tall. Little grows in their shade: fern, bilberry, mossed stone.
+          if (r < 0.6) tree(true, 0.9 + 0.35 * (1 - tone) + 0.35 * rnd());
+          else if (r < 0.67) lump(0.14 + 0.2 * rnd(), 0.1 + 0.14 * rnd(), MOSSY, false);
+          else if (r < 0.78) tuft(4, 0.16, 0.28, 0.08, 0.9, FERN_TIP, 0.6);
+          else if (r < 0.84) lump(0.18 + 0.1 * rnd(), 0.14 + 0.1 * rnd(), BILBERRY, true);
+          break;
+        }
+        case Tile.Desert: {
+          const r = rnd();
+          // Life is sparse and gathers where the sand is darker: bleached grass, grey sage, a dead shrub, ochre stone.
+          const lush = 0.04 + 0.17 * (1 - tone);
+          if (r < lush) tuft(4, 0.14, 0.3, 0.035, 0.8, DRY_TIP, 1);
+          else if (r < lush + 0.035) lump(0.16 + 0.14 * rnd(), 0.14 + 0.1 * rnd(), SAGE, true);
+          else if (r < lush + 0.05) deadShrub();
+          else if (r > 0.975) {
+            const n = 1 + Math.floor(rnd() * 3);
+            for (let k = 0; k < n; k++) {
+              const rr = 0.06 + 0.22 * rnd() * rnd();
+              lump(rr, rr * (0.5 + 0.5 * rnd()), SANDSTONE, false);
+            }
+          }
+          break;
+        }
+        case Tile.Tundra: {
+          const r = rnd();
+          // Nothing stands tall: low heath, dwarf shrubs, lichened stone, and cotton-grass in colonies where it is wet.
+          if (r < 0.34) tuft(4, 0.08, 0.18, 0.06, 1.1, HEATH_TIP, 0.7);
+          else if (r < 0.4) lump(0.12 + 0.22 * rnd(), 0.07 + 0.1 * rnd(), LICHEN, false);
+          else if (r < 0.44) lump(0.14 + 0.1 * rnd(), 0.08 + 0.05 * rnd(), HEATH_BUSH, true);
+          else if (r > 0.992) tree(true, 0.4 + 0.2 * rnd());
+          if (drift < -0.12 && rnd() < 0.3) blooms(2 + Math.floor(rnd() * 3), COTTON);
+          break;
+        }
+        case Tile.Marsh: {
+          const r = rnd();
+          // Sedge tussocks stand thick on the firmer ground; reeds take the pools; marsh marigold between.
+          if (tone < 0.3) {
+            if (r < 0.55) {
+              spot();
+              reeds(4 + Math.floor(rnd() * 4), 0);
+            }
+          } else if (r < 0.7) tuft(6, 0.3, 0.6, 0.05, 0.6, SEDGE_TIP, 0.85);
+          else if (r < 0.76) {
+            spot();
+            reeds(3 + Math.floor(rnd() * 3), 0);
+          }
+          if (rnd() < 0.07) blooms(2, YELLOW);
+          else if (rnd() < 0.04) blooms(2, COTTON);
+          break;
+        }
+        case Tile.Cliff: {
+          // Stone that has come away from the face.
+          if (rnd() < 0.16) {
+            const rr = 0.1 + 0.3 * rnd() * rnd();
+            lump(rr, rr * (0.6 + 0.5 * rnd()), STONE, false);
           }
           break;
         }
@@ -637,14 +784,14 @@ export class Terrain {
           waterIndex.push(fa[0], fa[1], fa[2], fb[0], fb[1], fb[2]);
         }
         // What players build is bare: paving a tile clears what grew there.
-        if (!edited && t !== Tile.DeepWater) adorn(t, wx, wy, i00);
+        if (!edited && t !== Tile.DeepWater && t !== Tile.Lake) adorn(t, wx, wy, i00);
       }
     }
 
     const ground = new BufferGeometry();
     ground.setAttribute('position', new BufferAttribute(pos, 3));
     ground.setAttribute('normal', new BufferAttribute(nor, 3, true));
-    ground.setAttribute('aColor', new BufferAttribute(col, 3, true));
+    ground.setAttribute('aColor', new BufferAttribute(col, 4, true));
     ground.setAttribute('aShade', new BufferAttribute(shade, 3, true));
     ground.computeBoundingSphere();
 
@@ -663,6 +810,7 @@ export class Terrain {
       water = new BufferGeometry();
       water.setAttribute('position', new BufferAttribute(wpos, 3));
       water.setAttribute('aDepth', new BufferAttribute(depth, 1));
+      water.setAttribute('aLake', new BufferAttribute(cornerLake.slice(), 1));
       water.setAttribute('aShade', new BufferAttribute(cornerShade.slice(), 3, true));
       water.setIndex(waterIndex);
       water.computeBoundingSphere();
@@ -674,10 +822,22 @@ export class Terrain {
 
     const trees: InstancedMesh[] = [];
     const m = new Matrix4(), q = new Quaternion(), p = new Vector3(), sc = new Vector3(), up = new Vector3(0, 1, 0);
-    for (const [geo, spots] of [[TREES.broadleaf, leafSpots], [TREES.conifer, pineSpots]] as const) {
+    for (const [geo, all] of [[TREES.broadleaf, leafSpots], [TREES.conifer, pineSpots]] as const) {
+     // A chunk thick with trees is drawn as four quarters, so the quarters that lie outside the known
+     // world can be left out (see `update`). Most of a chunk at the edge of the view is out there.
+     const quarters = all.length / 6 >= SPLIT_TREES ? 4 : 1, H = CHUNK / 2;
+     for (let quarter = 0; quarter < quarters; quarter++) {
+      const spots = quarters === 1 ? all : [];
+      if (quarters > 1) for (let i = 0; i < all.length; i += 6) {
+        if ((all[i] >= H ? 1 : 0) + (all[i + 2] >= H ? 2 : 0) === quarter) for (let k = 0; k < 6; k++) spots.push(all[i + k]);
+      }
       const count = spots.length / 6;
       if (!count) continue;
       const mesh = new InstancedMesh(geo, geo === TREES.broadleaf ? leafMat : pineMat, count);
+      // The part of the map this mesh stands on: x0, y0, x1, y1.
+      mesh.userData.rect = quarters === 1
+        ? [ox, oy, ox + CHUNK, oy + CHUNK]
+        : [ox + (quarter & 1) * H, oy + (quarter >> 1) * H, ox + (quarter & 1) * H + H, oy + (quarter >> 1) * H + H];
       // Per tree: how shaded its spot is, measured from mid-canopy over bare ground (not its own forest).
       const shades = new Float32Array(count * 3);
       for (let i = 0; i < count; i++) {
@@ -693,6 +853,7 @@ export class Terrain {
       mesh.instanceColor = new InstancedBufferAttribute(shades, 3);
       group.add(mesh);
       trees.push(mesh);
+     }
     }
     return { group, ground, water, cover: coverGeo, trees, shade: cornerShade.slice() };
   }
