@@ -68,7 +68,7 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Desert | `#D4AA70` | `#E8C488` | Apricot and ochre, deeper than the pale beach. Dune ripples cross it |
 | Tundra | `#829074` | `#A28E6E` | Lichen green drifting into russet heath. Frost `#E2E8EE` lies in patches all year |
 | Cliff | `#A8967E` | `#BEAC92` | Warm buff stone with darker bedding seams |
-| Stream bed, river bed | `#969680`, `#3A4E54` | `#AAA488`, `#42585A` | Ready for M4c step 2; nothing generates them yet |
+| Stream bed, river bed | `#969680`, `#3A4E54` | `#AAA488`, `#42585A` | Pebbles under a stream, seen through its water; a dark bed under a river, hidden by it |
 | Path (player-made) | `#B89C74` | | Drawn crisp, never blended |
 | Wall (player-made) | `#68625A` | | Drawn crisp, never blended |
 | Bare earth (steep green slopes) | `#9E8666` | | Faces too steep to hold grass |
@@ -79,7 +79,7 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Water, shallow | `#7FC0BD` | Blends to deep over 2.4 tiles of depth; 60–96% opaque |
 | Water, deep | `#2F6687` | |
 | Lake water, shallow | `#8FB89A` | Greener than the sea |
-| Lake water, deep | `#2A5458` | Darker and greener. A lake lies stiller than the sea and has only a thin pale line at its edge, no surf |
+| Lake water, deep | `#2A5458` | Darker and greener. A lake lies stiller than the sea and has only a thin pale line at its edge, no surf. Rivers and streams use the same two colours: all fresh water is one family |
 | Shore foam | `#F4EFE2` | A thin line that breathes in and out |
 | Broadleaf crown | `#41653F` to `#8AA65A` | Ramp from the shaded underside to the sunlit top. Each tree is tinted a little cooler or warmer by where it stands |
 | Pine | `#2C4A3D` to `#587D5E` | Darker and bluer than broadleaf, so a stand of pine reads at a glance |
@@ -146,6 +146,25 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Every explorer carries a lantern.** From sunset to just after sunrise a warm pool of light (`#FFAE62`, reaching 7.5 tiles) surrounds each explorer and flickers slightly. It lights the ground, trees, water and the piece itself. Yours always shows; up to three more go to the nearest other explorers. At night, another explorer is a warm light in the distance: company, in keeping with "shared, not lonely".
 - **The day follows the wall clock, not the network.** One day lasts 48 real minutes and every explorer reads the same hour from their own clock. Nothing is sent. The hours are not spent evenly: the day lingers at dawn (about 5 minutes) and through the golden hour and sunset (about 8), and hurries through noon (about 5) and the night (about 10 of the 48).
 - **`#time=`** holds the light still: a name (`dawn`, `morning`, `noon`, `afternoon`, `golden`, `sunset`, `dusk`, `night`) or an hour such as `#time=16.5`. `window.__ti.view.setHour(h)` does the same; `setHour(null)` returns to the clock. The debug panel shows the hour.
+
+## Water
+**Built in visual-foundation milestones 1, 7 and 8 (2026-11-12). The sea and the lakes' colours are Decided; the rivers, streams and raised lakes of milestone 8 are awaiting Sid.** The code is the water shader in `look.ts` and the height field and water mesh in `terrain.ts`.
+
+- **Every water stands at its own level.** The sea is at height 0. A lake stands wherever its basin filled, a river falls along its course, and each is drawn there. The generator (M4c step 2) gives the surface; the renderer gives each corner of the map a ground height and, where it is wet, a water level.
+- **How deep it is drawn.**
+  | Water | Depth | What you see |
+  |---|---|---|
+  | Sea | The sea bed's own, about 1.3 tiles where it turns deep | Teal shallows to deep blue |
+  | Lake | The generator's depth, drawn 8 tiles to its unit, as under the sea | Jade shallows over silt, dark green-teal over peat |
+  | Stream | 0.22 of a tile | Pale, part see-through: the pebbled bed shows, stones break the surface, a few reeds stand at the edge. It looks wadeable, and is |
+  | River | 0.9 of a tile | Dark and opaque: the bed is hidden. It looks deep, and blocks |
+- **Fresh water darkens with depth sooner than the sea,** so a river a tile deep already reads as deep.
+- **The current shows.** Streaks of lighter and darker water are drawn out along a river or stream and carried down it, about a tile and a half a second. The direction comes from the generator's channel spans. Lakes and the sea have none.
+- **White water.** Where the water's own surface is steep (a river dropping over a step, one lake spilling into another, a river falling to the sea), it breaks into foam that streams down the drop. This is read from the surface's slope, so it needs no data of its own.
+- **The shoreline is cut by the land.** The water's surface is carried through the dry corners beside it at the level of the nearest water, so it runs flat under the bank and the ground itself makes the edge. That is how the sea's shore has always worked; it now works at any height.
+- **An explorer wades** a quarter of a tile under the surface of whatever water they stand in.
+- **The swell comes from real noise.** The surface heaves by the grain texture read at two scales that drift against each other. It was two sine waves, whose crests fell into rows; the sun's glint then lit the sea in a regular pattern of white patches (found in milestone 8, the same fault as the snow's polka dots).
+- **Snow does not lie on a lake's or river's bed.** The ground mesh carries a flag for "under water".
 
 ## Wind
 **Decided.** Chosen in visual-foundation milestone 4 and approved by Sid on 2026-11-12. The code is `apps/client/src/render/wind.ts` (direction and strength from the clock) and `windAt` in `look.ts` (the field every shader samples).
@@ -279,7 +298,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 - **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
 - **Shadows and ambient occlusion are baked when a chunk is built.** Each vertex stores how high the land (and forest canopy) rises toward the morning sun and toward the evening sun. The shader compares that with the sun's elevation, so long soft shadows follow the time of day for one byte per vertex per direction. The morning horizon is used until midday and the evening one after it, for the sun and for the moon alike.
 - **The known world is a circle around the player** (44 tiles, `REVEAL_RADIUS`). Beyond it is blank parchment with a faint hand-ruled graticule every 64 tiles. In the 15-tile fringe the land is first a flat ink wash inside an inked outline, then rises as a pale paper relief, then takes its colour. This stands in for M5's explored area: M5 should replace `revealAt` in `look.ts` with a lookup of what has been explored.
-- `apps/client/src/render/terrain.ts`: heightmap chunks streamed around the player, only inside the known world. Tile corners are nudged off the grid and each tile is split along its flatter diagonal, so the land reads as hand-cut facets. Water is its own mesh, built only where there is water, on the same corners as the ground so the shoreline lines up; it is tinted by depth, faceted by its own ripples, glints in the sun and has a foam line that laps at the shore. Steep hillsides show bare earth or stone in bands that follow the slope. Sand the water has just left is darker (the strand).
+- `apps/client/src/render/terrain.ts`: heightmap chunks streamed around the player, only inside the known world. Tile corners are nudged off the grid and each tile is split along its flatter diagonal, so the land reads as hand-cut facets. Steep hillsides show bare earth or stone in bands that follow the slope. Ground the water has just left is darker (the strand). **Water** is its own mesh, built only where there is some, on the same corners as the ground so the shoreline lines up; each corner carries its own level (see "Water"). `Terrain.heightAt` is the ground (the bed, under water), `waterAt` the water's surface over a spot and `surfaceAt` the top of whichever is higher.
 - `apps/client/src/render/flora.ts` and the `adorn` rules in `terrain.ts`: **what grows on the land** (milestone 2). Everything is decided from `(seed, x, y)`, is client-only and never affects walkability. A tile a player has edited is bare.
   - **Trees are instanced:** a broadleaf (31 triangles: trunk, a faceted crown and a side lobe) and a pine (21 triangles: trunk and three drooping tiers). About two forest tiles in three hold a tree, so the forest floor shows between them. Each is turned, stretched and tinted differently. Broadleaves fill the lowlands and pines take over as the land climbs, with the odd stand of each among the other. A few lone trees stand in open grass and cast a soft baked shadow.
   - **Ground cover is one merged mesh per chunk** (one draw call): grass tufts that thicken in the lusher patches, taller golden tufts and flower colonies in meadows, ferns and bushes on the forest floor, marram grass and pebbles on the beach, reed beds with seed heads in the shallows, stones that break the water, boulders and stunted pines on rock, dark stones in the snow.
@@ -362,13 +381,16 @@ The order is by how much each step decides the look of everything after it. Each
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
 | 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
-| 8 | **Finishing:** in the order Sid set on 2026-11-12: (1) sheer cliff faces, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1) done.** (2) next |
+| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1) and (1b) done.** (2) next, then the chunk-mesh worker (now this session's to build: M4c's worker is for drainage regions only) |
 
 ### Kept for later (found along the way)
 - **Chunk generation belongs in a worker.** This is the biggest known risk to 60 fps on a phone: building a chunk's mesh takes about 4 to 5 ms here on a desktop, plus generating its tiles and heights, so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame, which is not a fix. **On hold (Sid, 2026-11-12):** M4c step 2 is adding a worker for river regions, so this waits until that is merged and then shares it.
 - **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do.
 - **A diagonal terrace is a run of short walls and banks,** not one straight face, because each wall has to end on a tile's edge. It reads as a rocky step.
 - **Walls cast no shadow of their own.** Shadows are still baked from the height field, which sees the cliff as the slope it used to be. The shade is roughly right and softer than a sheer face would cast.
+- **A waterfall is a ramp, not a fall.** Where a river drops several tiles in one, the water is one steep facet of streaming foam. A sheer fall would need the cliff builder to carry water.
+- **Mist does not gather on a mountain lake.** It lies below a fixed height, measured from the sea.
+- **Water does not freeze** (already listed), and a river in winter runs between snowy banks unchanged.
 - **Pixel ratio on phones.** Still capped at 2. Try 1.5, or scale it by measured frame time.
 - **Avatars** are a placeholder playing piece. Real characters wait for M5.
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
@@ -404,7 +426,10 @@ The order is by how much each step decides the look of everything after it. Each
 - **The renderer drew the land on a different curve from the one the rules use** (found in milestone 7). M4c's shared rule calls a tile a cliff when its corners differ by more than 1.2 tiles on the curve `heightOf` (30·u^1.5). The renderer was still drawing with its own older curve (30·u^1.6), so a cliff was drawn a little less steep than the rule measured. The renderer now calls `heightOf`, so what blocks you is exactly what you see. Mountains are about 5% taller as a result.
 - **This branch is `main` plus milestone 7.** `main` was merged in on 2026-11-12 as a fast-forward (it already held milestones 1 to 6), which brought protocol 8. `npm run e2e` now takes its ports from the environment, so this worktree runs it beside the main checkout with `E2E_SIGNAL_PORT=8797 E2E_SEED_PORT=8798 E2E_CLIENT_PORT=4174 E2E_REUSE=0 npm run e2e`.
 - **Cliffs were steep slopes, not vertical faces.** Fixed in milestone 8: see "Cliffs are sheer" above.
-- **Streams and rivers have colours but have not been seen.** Nothing generates them until M4c step 2, so their look is untested.
+- **Streams, rivers and raised lakes had no water** until milestone 8: the renderer drew one water surface at sea level, so they showed as ground in a flat colour. They now have water at their own levels (see "Water").
+- **The generator gives a channel no depth and no distance to its middle** (found in milestone 8), only its surface and its kind. So a stream or river is drawn at one fixed depth from bank to bank, and its banks step at the size of a tile. A distance to the channel's centre line in `Ground` would allow a bed that shelves and a smoother bank. It would not change any tile or rule.
+- **Rivers drop steeply in places:** 72 spans within about 2,600 tiles of the `vista` spawn fall more than half a tile in a tile and a half, some by 3 tiles, including where a river meets the sea below a cliff. They are drawn as a slope of white water one tile long, not as a sheer fall.
+- **One shared unit test runs close to its time limit.** `worldgen > gives the same answer whatever was asked before` took 5.2 s against a 5 s limit once, while this session was also measuring in the browser. It passed alone (98 of 98).
 
 ### Flicker: how motion is measured
 Nobody had watched the wind move before Sid did, and he found tree crowns flashing. Motion is now measured, not judged from stills.
@@ -427,7 +452,25 @@ Nobody had watched the wind move before Sid did, and he found tree crowns flashi
 - **Ruled out:** normals are not rebuilt from moved positions (they are fixed per facet), and the wind's sheen is on grass only and is slow (it moved a typical grass pixel 1.8%, about once every four seconds).
 - **What still changes:** with light and movement together, three pixels in ten still swing more than 20%. Those are pixels on the edge of a crown or between two of its facets, which a moving tree passes back and forth across. That is the movement itself, at the sway's own rate.
 - **Reeds thrashed.** Their quiver grew with their height, so a reed flicked four times as far as grass. Rate of change for a reed pixel went from 0.81 to 0.44 times a second, and its largest frame-to-frame change from 15% to 10%.
+- **Water after milestone 8's changes** (wind 0.6): the sea 2.5% for a typical pixel at 0.13 times a second; a lake 5.1% at 0.19; a river 6.9% at 0.56, which is its current. The river's streaks first ran twice as fast (9.7% at 0.94) and were slowed.
 - **Grass and water were sound.** Grass changes with its own movement (typical pixel 13%, 0.44 times a second after the change). Lake and sea water change slowly: 6 to 11% for a typical pixel, about once every five seconds.
+
+### Water at its own levels (milestone 8, 2026-11-12)
+Fully zoomed out in an 862×1234 window, on the M4c step 2 terrain:
+
+| Spot | Draw calls | Triangles | Frame |
+|---|---|---|---|
+| River in a valley (`256,-256`) | 72 | 91k | 3.2–3.4 ms |
+| Stream through conifer forest (`128,128`) | 93 | 172k | 3.7 ms |
+| Mountain lake below a snow slope (`960,-192`) | 67 | 75k | 3.0 ms |
+| River dropping into a lake (`960,-802`) | 86 | 119k | 3.2 ms |
+| Lake and marsh (`352,144`) | 59 | 101k | 2.7 ms |
+| Sandy sea coast (`1968,1200`) | 38 | 48k | 2.0 ms |
+| Budget | 150 | 300k | 12 ms on the phone |
+
+- Water adds one draw call for each chunk that has any, as before; inland chunks with a river or lake now have one where they had none.
+- The water shader reads the grain texture twice per vertex for the swell and, on rivers only, once per pixel for the current.
+- **Chunk build, warm:** 4.8 ms mean (6.8 ms worst) over 14 chunks at the river.
 
 ### Snow drifts, the year and the heat (2026-11-12)
 Three changes Sid asked for, checked after they were made:
@@ -503,6 +546,12 @@ World `vista`, on the M4c terrain. Add `&time=afternoon&season=summer&weather=cl
 | `#w=vista&at=336,1776` | Tundra with frost patches |
 | `#w=vista&at=-1524,-1020` | Terrace cliffs stepping through grassland |
 | `#w=vista&at=1968,1200` | A sandy sea coast |
+| `#w=vista&at=256,-256` | A river in its valley |
+| `#w=vista&at=128,128` | A stream through conifer forest, by the spawn |
+| `#w=vista&at=960,-192` | A mountain lake below a snow slope |
+| `#w=vista&at=960,-802` | A river dropping into a lake between cliffs: white water |
+| `#w=vista&at=218,332` | A river reaching the sea across a beach |
+| `#w=vista&at=550,-92` | A river running into a lake |
 
 The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show different land now. Zoom out fully to see the diorama on its map.
 
@@ -528,4 +577,8 @@ Sid answered every item that was waiting, through the coordinating session. The 
 - Item 4 (late-afternoon default light) by the day/night cycle, and item 9 (reeds on sea shores) by milestone 7.
 
 ### Waiting for Sid
+34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
+35. **A visible current on rivers and streams,** as slow streaks carried downstream.
+36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
+37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
 33. **Sheer cliffs as built:** one vertical face along the drop, grass to the edge, the beach to the foot, and open ground left at its true heights (so the rim is slightly ragged). The alternative is to level the ground beside a cliff as well, which is cleaner but draws walkable tiles flatter than they are.

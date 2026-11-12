@@ -17,7 +17,7 @@ import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial
 import type { Air } from './air.ts';
 import { Motes } from './motes.ts';
 import { Precipitation } from './precip.ts';
-import { Terrain, WATER_Y } from './terrain.ts';
+import { Terrain } from './terrain.ts';
 import { WEATHERS, type Season, type Weather } from './weather.ts';
 import { ZoneLines } from './zones.ts';
 
@@ -127,7 +127,7 @@ export class GameView {
   private zoneLines: ZoneLines;
   private precip = new Precipitation();
   private motes = new Motes();
-  private heightAt = (x: number, y: number) => this.terrain.heightAt(x, y);
+  private surfaceAt = (x: number, y: number) => this.terrain.surfaceAt(x, y);
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -240,7 +240,8 @@ export class GameView {
       this.renderer.setSize(w, h);
     }
 
-    const groundY = Math.max(this.terrain.heightAt(self.x, self.y), WATER_Y - 0.25);
+    // An explorer in water wades: a quarter of a tile under the surface, whatever level that water stands at.
+    const groundY = Math.max(this.terrain.heightAt(self.x, self.y), this.terrain.waterAt(self.x, self.y) - 0.25);
     const target = new Vector3(self.x, groundY, self.y);
     const cp = Math.cos(PITCH);
     this.camera.position.set(
@@ -267,7 +268,7 @@ export class GameView {
     this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
     this.precip.update(this.look.weather, this.look.wind, groundY, radius, dt);
-    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.heightAt, WATER_Y);
+    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.surfaceAt, -Infinity);
 
     const seen = new Set<string>();
     const v = new Vector3();
@@ -276,7 +277,7 @@ export class GameView {
     for (const l of lamps) l.w = 0;
     for (const p of players) {
       const a = this.avatar(p);
-      const gy = Math.max(this.terrain.heightAt(p.x, p.y), WATER_Y - 0.25);
+      const gy = Math.max(this.terrain.heightAt(p.x, p.y), this.terrain.waterAt(p.x, p.y) - 0.25);
       a.mesh.position.set(p.x, gy, p.y);
       let slot = 0;
       if (!p.self) {
@@ -385,8 +386,8 @@ export class GameView {
     const lit = this.look.key * Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
     a.strength.x = 0.2 + 0.3 * lit;
 
-    const h = t.heightAt(x, y), e = 0.3;
-    const wet = h < WATER_Y;
+    const h = t.heightAt(x, y), e = 0.3, water = t.waterAt(x, y);
+    const wet = h < water;
     // The slope under it (flat on water), as a unit normal.
     const n = this.tmpN.set(
       wet ? 0 : (t.heightAt(x - e, y) - t.heightAt(x + e, y)) / (2 * e),
@@ -400,7 +401,7 @@ export class GameView {
     const reach = lit * Math.min(2.2, (0.8 * PAWN_H * Math.hypot(sun.x, sun.z)) / Math.max(0.2, sun.y));
     const half = SHADOW_R + reach / 2;
     // The near end of the shadow stays under the piece; the far end reaches away from the sun.
-    const cx = x + along.x * (reach / 2), cy = Math.max(h, WATER_Y) + along.y * (reach / 2), cz = y + along.z * (reach / 2);
+    const cx = x + along.x * (reach / 2), cy = Math.max(h, water) + along.y * (reach / 2), cz = y + along.z * (reach / 2);
     a.shadow.matrix
       .makeBasis(along.multiplyScalar(half), n, across.multiplyScalar(SHADOW_R))
       .setPosition(cx + n.x * 0.03, cy + n.y * 0.03, cz + n.z * 0.03);

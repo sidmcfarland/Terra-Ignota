@@ -9,15 +9,24 @@ import {
   Quaternion,
   Vector3,
 } from 'three';
-import { CHUNK, SEA_LEVEL, Tile, TILE_COUNT, elevationAt, hash2, heightOf, perlin, rand2, type TileCache } from '@terra/shared';
+import {
+  CHUNK, Channel, SEA_LEVEL, Tile, TILE_COUNT, channelSpans, getRegion, hash2, heightOf, landAt, newGround, perlin, rand2, regionOf,
+  type TileCache,
+} from '@terra/shared';
 import { LIFT_UNIT, TREES, cover, rnd, seedRnd, type RGB } from './flora.ts';
 import { BAKE_EAST, BAKE_WEST, foliageMaterial, groundMaterial, waterMaterial } from './look.ts';
 
 /** Chunk building stops for the frame once it has used this much time (it always builds at least one). */
 const BUILD_BUDGET_MS = 4;
 
-/** World height (in tiles) of the water surface. */
+/** World height (in tiles) of the sea's surface. Lakes, rivers and streams each stand at their own level. */
 export const WATER_Y = 0;
+/**
+ * How deep the water is drawn, in tiles. The generator gives a lake's depth in its own units; a unit is
+ * drawn 8 tiles deep, as under the sea. It gives a channel no depth at all, only its surface, so a
+ * stream is drawn shallow enough to see its bed and a river deep enough to hide it.
+ */
+const LAKE_DEPTH = 8, STREAM_DEPTH = 0.22, RIVER_DEPTH = 0.9;
 
 /**
  * Maps raw elevation to world height. It is the shared rule's own curve (`heightOf`), so a tile the
@@ -143,29 +152,54 @@ const FROST: RGB = [226, 232, 238], POOL: RGB = [56, 72, 70];
 /** Flowers stay paler than any explorer's colour. Oxeye white, buttercup, harebell, and sea thrift by the shore. */
 const WHITE: RGB = [244, 238, 220], YELLOW: RGB = [236, 204, 96], LILAC: RGB = [172, 160, 214], THRIFT: RGB = [226, 170, 184];
 
-/** Corner heights of the world, cached a chunk at a time. Shared by meshing, shadow baking and avatar grounding. */
+/**
+ * Corner heights of the world, cached a chunk at a time: the ground (the bed, where there is water) and
+ * the water's surface over it. Shared by meshing, shadow baking and avatar grounding.
+ */
 class HeightField {
-  private grids = new Map<number, Float32Array>();
+  private grids = new Map<number, { bed: Float32Array; water: Float32Array }>();
   private readonly seed: number;
+  private readonly ground = newGround();
 
   constructor(seed: number) {
     this.seed = seed;
   }
 
-  /** Heights at the CHUNK×CHUNK tile corners a chunk owns (its north-west ones), row-major. */
-  grid(cx: number, cy: number): Float32Array {
+  private at(cx: number, cy: number) {
     const key = (cx + 32768) * 65536 + (cy + 32768);
     let g = this.grids.get(key);
     if (!g) {
       if (this.grids.size >= 400) this.grids.delete(this.grids.keys().next().value!);
-      g = new Float32Array(CHUNK * CHUNK);
-      const ox = cx * CHUNK, oy = cy * CHUNK;
+      g = { bed: new Float32Array(CHUNK * CHUNK), water: new Float32Array(CHUNK * CHUNK) };
+      const ox = cx * CHUNK, oy = cy * CHUNK, land = this.ground;
       for (let y = 0; y < CHUNK; y++) for (let x = 0; x < CHUNK; x++) {
-        g[y * CHUNK + x] = heightFromElevation(elevationAt(this.seed, ox + x, oy + y));
+        landAt(this.seed, ox + x, oy + y, land);
+        // Under a lake or in a channel the generator's height is the water's surface; under the sea it is the bed.
+        const top = heightOf(land.u), i = y * CHUNK + x;
+        if (land.channel) {
+          g.water[i] = top;
+          g.bed[i] = top - (land.channel === Channel.River ? RIVER_DEPTH : STREAM_DEPTH);
+        } else if (land.lake > 0) {
+          g.water[i] = top;
+          g.bed[i] = top - land.lake * LAKE_DEPTH;
+        } else {
+          g.water[i] = land.u < 0 ? WATER_Y : NaN;
+          g.bed[i] = top;
+        }
       }
       this.grids.set(key, g);
     }
     return g;
+  }
+
+  /** Ground heights at the CHUNK×CHUNK tile corners a chunk owns (its north-west ones), row-major. */
+  grid(cx: number, cy: number): Float32Array {
+    return this.at(cx, cy).bed;
+  }
+
+  /** The water's surface at the same corners; NaN where a corner is dry. */
+  water(cx: number, cy: number): Float32Array {
+    return this.at(cx, cy).water;
   }
 
   has(cx: number, cy: number): boolean {
@@ -174,7 +208,12 @@ class HeightField {
 
   corner(x: number, y: number): number {
     const cx = Math.floor(x / CHUNK), cy = Math.floor(y / CHUNK);
-    return this.grid(cx, cy)[(y - cy * CHUNK) * CHUNK + (x - cx * CHUNK)];
+    return this.at(cx, cy).bed[(y - cy * CHUNK) * CHUNK + (x - cx * CHUNK)];
+  }
+
+  waterCorner(x: number, y: number): number {
+    const cx = Math.floor(x / CHUNK), cy = Math.floor(y / CHUNK);
+    return this.at(cx, cy).water[(y - cy * CHUNK) * CHUNK + (x - cx * CHUNK)];
   }
 }
 
@@ -191,6 +230,8 @@ interface Chunk {
 // Scratch space reused by every build.
 const winRaw = new Float32Array(WIN * WIN);
 const winGround = new Float32Array(WIN * WIN);
+/** The water's surface at each window corner; NaN where dry. */
+const winWater = new Float32Array(WIN * WIN);
 const winOcc = new Float32Array(WIN * WIN);
 const cornerShade = new Uint8Array(N * N * 3);
 const cornerColor = new Float32Array(N * N * 3);
@@ -199,8 +240,16 @@ const cornerZ = new Float32Array(N * N);
 const cornerTone = new Float32Array(N * N);
 const cornerDrift = new Float32Array(N * N);
 const cornerSteep = new Float32Array(N * N);
-/** 1 at corners that touch lake water, 0 elsewhere (the sea included). */
+/** 1 at corners that touch fresh water (lake, marsh, river or stream), 0 elsewhere (the sea included). */
 const cornerLake = new Float32Array(N * N);
+/** The water each corner stands in or beside: its own surface, or the lowest that touches it. NaN far from any. */
+const cornerWater = new Float32Array(N * N);
+/** 1 where a corner's ground is under water. */
+const cornerUnder = new Uint8Array(N * N);
+/** Which way a river or stream runs at each corner (x, z), scaled by how strongly it shows; zero off a channel. */
+const cornerFlow = new Float32Array(N * N * 2);
+/** A channel's line can lie this far (tiles) from the corners it wets: its half width, and its curve off the straight span. */
+const SPAN_REACH = 24;
 /** The slow noises are sampled every LAT tiles and interpolated; the lattice lines up across chunks, so seams match. */
 const LAT = 4, LN = CHUNK / LAT + 1;
 const latTone = new Float32Array(LN * LN);
@@ -253,6 +302,8 @@ export class Terrain {
   private chunks = new Map<string, Chunk>();
   private readonly tiles: TileCache;
   private readonly heights: HeightField;
+  /** The channel spans of each drainage region met so far: ax, ay, bx, by (upstream end to downstream end), kind. */
+  private spans = new Map<string, Float32Array>();
   /** Chunks whose generated tiles this renderer has already asked for (so they're in the tile cache). */
   private tilesReady = new Set<string>();
 
@@ -283,6 +334,22 @@ export class Terrain {
     const a = h00 + (h10 - h00) * fx;
     const b = h01 + (h11 - h01) * fx;
     return a + (b - a) * fy;
+  }
+
+  /** The water's surface over a spot, or -Infinity where its tile has none: the mean of the tile's wet corners. */
+  waterAt(x: number, y: number): number {
+    const x0 = Math.floor(x), y0 = Math.floor(y), hf = this.heights;
+    let sum = 0, n = 0;
+    for (let k = 0; k < 4; k++) {
+      const w = hf.waterCorner(x0 + (k & 1), y0 + (k >> 1));
+      if (w === w) { sum += w; n++; }
+    }
+    return n ? sum / n : -Infinity;
+  }
+
+  /** The top of whatever is at a spot: the ground, or the water standing over it. */
+  surfaceAt(x: number, y: number): number {
+    return Math.max(this.heightAt(x, y), this.waterAt(x, y));
   }
 
   /**
@@ -359,6 +426,29 @@ export class Terrain {
     return true;
   }
 
+  /** The spans of river and stream that pass near a chunk, as [ax, ay, bx, by, kind] five at a time. */
+  private spansNear(cx: number, cy: number): number[] {
+    const seed = this.tiles.seed, out: number[] = [];
+    const x0 = cx * CHUNK - SPAN_REACH, y0 = cy * CHUNK - SPAN_REACH, x1 = x0 + CHUNK + 2 * SPAN_REACH, y1 = y0 + CHUNK + 2 * SPAN_REACH;
+    // A span is up to about 45 tiles long, and belongs to the region its upstream end is in.
+    for (let ry = regionOf(y0 - 48); ry <= regionOf(y1 + 48); ry++) for (let rx = regionOf(x0 - 48); rx <= regionOf(x1 + 48); rx++) {
+      const key = `${rx},${ry}`;
+      let list = this.spans.get(key);
+      if (!list) {
+        const found: number[] = [];
+        channelSpans(getRegion(seed, rx, ry), (ax, ay, bx, by, kind) => found.push(ax, ay, bx, by, kind));
+        if (this.spans.size >= 12) this.spans.delete(this.spans.keys().next().value!);
+        this.spans.set(key, (list = Float32Array.from(found)));
+      }
+      for (let o = 0; o < list.length; o += 5) {
+        if (Math.max(list[o], list[o + 2]) < x0 || Math.min(list[o], list[o + 2]) > x1) continue;
+        if (Math.max(list[o + 1], list[o + 3]) < y0 || Math.min(list[o + 1], list[o + 3]) > y1) continue;
+        out.push(list[o], list[o + 1], list[o + 2], list[o + 3], list[o + 4]);
+      }
+    }
+    return out;
+  }
+
   /** Generated (pre-edit) tile, for everything that must not depend on which edits a chunk has seen. */
   private baseTile(x: number, y: number): Tile {
     const cx = Math.floor(x / CHUNK), cy = Math.floor(y / CHUNK);
@@ -369,16 +459,17 @@ export class Terrain {
   private gather(cx: number, cy: number) {
     const seed = this.tiles.seed;
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const g = this.heights.grid(cx + dx, cy + dy);
+      const g = this.heights.grid(cx + dx, cy + dy), gw = this.heights.water(cx + dx, cy + dy);
       const t = this.tiles.base(cx + dx, cy + dy);
       const x0 = Math.max(0, dx * CHUNK + M), x1 = Math.min(WIN, (dx + 1) * CHUNK + M);
       const y0 = Math.max(0, dy * CHUNK + M), y1 = Math.min(WIN, (dy + 1) * CHUNK + M);
       for (let j = y0; j < y1; j++) {
         const row = (j - M - dy * CHUNK) * CHUNK - M - dx * CHUNK;
         for (let i = x0; i < x1; i++) {
-          // Shadows fall on the water's surface, not the seabed.
-          const raw = g[row + i], h = raw > WATER_Y ? raw : WATER_Y;
+          // Shadows fall on the water's surface, not the bed. (A dry corner's water is NaN, which is never above.)
+          const raw = g[row + i], level = gw[row + i], h = level > raw ? level : raw;
           winRaw[j * WIN + i] = raw;
+          winWater[j * WIN + i] = level;
           winGround[j * WIN + i] = h;
           const tile = t[row + i];
           winOcc[j * WIN + i] =
@@ -420,6 +511,7 @@ export class Terrain {
     // Corners on a chunk edge come out identical in both chunks, so seams match.
     const hc = new Float32Array(N * N);
     let anyWater = false;
+    let spans: number[] | null = null;
     for (let y = 0; y < LN; y++) for (let x = 0; x < LN; x++) {
       const wx = ox + x * LAT, wy = oy + y * LAT;
       latTone[y * LN + x] = perlin(seed + 4099, wx / 13, wy / 13);
@@ -430,7 +522,17 @@ export class Terrain {
       const w = (y + M) * WIN + x + M;
       const h = winRaw[w];
       hc[i] = h;
-      if (h < 0.12) anyWater = true;
+      // The water here: this corner's own, or for a dry corner the lowest that a neighbour stands in. The
+      // water's surface is drawn through dry corners at that level, so it runs flat under the bank and
+      // the ground itself cuts the shoreline.
+      let level = winWater[w];
+      cornerUnder[i] = level > h ? 1 : 0;
+      if (level !== level) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const near = winWater[w + dy * WIN + dx];
+        if (near === near && !(near >= level)) level = near;
+      }
+      cornerWater[i] = level;
+      if (h - level < 0.12) anyWater = true;
       cornerX[i] = x + (rand2(seed ^ 0x6a17, wx, wy) - 0.5) * 2 * JITTER;
       cornerZ[i] = y + (rand2(seed ^ 0x3c59, wx, wy) - 0.5) * 2 * JITTER;
 
@@ -443,7 +545,7 @@ export class Terrain {
       // A second, slower drift decides which plants gather where: flower colonies, reed beds, stands of pine.
       const d0 = latDrift[l] + (latDrift[l + 1] - latDrift[l]) * fx, d1 = latDrift[l + LN] + (latDrift[l + LN + 1] - latDrift[l + LN]) * fx;
       cornerDrift[i] = d0 + (d1 - d0) * fy;
-      let r = 0, g = 0, b = 0, forest = 0, desert = 0, tundra = 0, marsh = 0, lake = 0, open = 0;
+      let r = 0, g = 0, b = 0, forest = 0, desert = 0, tundra = 0, marsh = 0, lake = 0, open = 0, stream = 0, river = 0;
       for (let k = 0; k < 4; k++) {
         const t = basePad[(y + (k >> 1)) * P + x + (k & 1)], c = t * 6;
         // A cliff's stone belongs to its face. The ground at its top and its foot takes the colours of the
@@ -458,6 +560,8 @@ export class Terrain {
         else if (t === Tile.Tundra) tundra++;
         else if (t === Tile.Marsh) marsh++;
         else if (t === Tile.Lake || t === Tile.LakeShallows) lake++;
+        else if (t === Tile.Stream) stream++;
+        else if (t === Tile.River) river++;
       }
       if (open) { r /= open; g /= open; b /= open; }
       else {
@@ -465,7 +569,26 @@ export class Terrain {
         const c = Tile.Cliff * 6;
         r = GROUND_FLAT[c] + GROUND_FLAT[c + 3] * tone; g = GROUND_FLAT[c + 1] + GROUND_FLAT[c + 4] * tone; b = GROUND_FLAT[c + 2] + GROUND_FLAT[c + 5] * tone;
       }
-      cornerLake[i] = lake ? 1 : 0;
+      cornerLake[i] = lake || marsh || stream || river ? 1 : 0;
+      // Which way the water runs here: along the nearest span of its channel, upstream end to downstream end.
+      // The span is a straight line and the channel curves about it, which is near enough to draw a current by.
+      let flowX = 0, flowZ = 0;
+      if (stream || river) {
+        spans ??= this.spansNear(cx, cy);
+        let best = Infinity;
+        for (let o = 0; o < spans.length; o += 5) {
+          const ax = spans[o], ay = spans[o + 1], dx = spans[o + 2] - ax, dy = spans[o + 3] - ay, len2 = dx * dx + dy * dy;
+          let t = ((wx - ax) * dx + (wy - ay) * dy) / len2;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const ex = wx - (ax + t * dx), ey = wy - (ay + t * dy), d2 = ex * ex + ey * ey;
+          if (d2 >= best) continue;
+          best = d2;
+          // A river's current shows more than a stream's.
+          const k = (river ? 1 : 0.7) / Math.sqrt(len2);
+          flowX = dx * k; flowZ = dy * k;
+        }
+      }
+      cornerFlow[i * 2] = flowX; cornerFlow[i * 2 + 1] = flowZ;
       if (desert) {
         // Dunes: broad ripples lying across the prevailing wind, bent by the slow drift so no two run alike.
         const k = 1 + 0.06 * (desert / 4) * Math.sin((wx - wy) * 0.55 + 9 * cornerDrift[i]);
@@ -481,8 +604,9 @@ export class Terrain {
         const p = (marsh / 4) * smoothstep(0.36, 0.2, tone) * 0.7;
         r += (POOL[0] - r) * p; g += (POOL[1] - g) * p; b += (POOL[2] - b) * p;
       }
-      // The strand: sand the water has just left is darker and cooler than dry sand.
-      const wet = smoothstep(0.36, 0.17, h) * smoothstep(-0.4, -0.1, h);
+      // The strand: ground the water has just left is darker and cooler than dry ground.
+      const above = h - level;
+      const wet = above === above ? smoothstep(0.36, 0.17, above) * smoothstep(-0.4, -0.1, above) : 0;
       cornerColor[i * 3] = r * (1 - 0.15 * wet);
       cornerColor[i * 3 + 1] = g * (1 - 0.12 * wet);
       cornerColor[i * 3 + 2] = b * (1 - 0.08 * wet);
@@ -507,7 +631,8 @@ export class Terrain {
     const nor = new Int8Array(count * 3);
     // rgb, then how strongly the rock's bedding shows on this facet (see the ground shader).
     const col = new Uint8Array(count * 4);
-    const shade = new Uint8Array(count * 3);
+    // Ambient occlusion, the two baked horizons, and 255 where the ground is dry (0 under water).
+    const shade = new Uint8Array(count * 4);
     let v = 0;
     const tri = (a: number, b: number, c: number, t: Tile, edited: boolean, jitter: number, slot: number) => {
       const ax = cornerX[a], ay = hc[a], az = cornerZ[a];
@@ -527,7 +652,7 @@ export class Terrain {
         g = (cornerColor[a * 3 + 1] + cornerColor[b * 3 + 1] + cornerColor[c * 3 + 1]) / 3;
         bl = (cornerColor[a * 3 + 2] + cornerColor[b * 3 + 2] + cornerColor[c * 3 + 2]) / 3;
         // Steep faces above the waterline shed their cover. Dunes and beds under water keep theirs.
-        if (t !== Tile.Water && t !== Tile.DeepWater && t !== Tile.Sand && t !== Tile.Desert && t !== Tile.Lake && t !== Tile.LakeShallows) {
+        if (t !== Tile.Water && t !== Tile.DeepWater && t !== Tile.Sand && t !== Tile.Desert && t !== Tile.Lake && t !== Tile.LakeShallows && t !== Tile.Stream && t !== Tile.River) {
           // Mostly the lie of the land around the facet, so scarps run in bands along a hillside
           // instead of speckling it; partly the facet's own tilt, so the band's edge stays broken.
           const own = Math.sqrt(Math.max(0, 1 - ny * ny)) / Math.max(0.2, ny);
@@ -565,7 +690,8 @@ export class Terrain {
         pos[o] = cornerX[i]; pos[o + 1] = hc[i]; pos[o + 2] = cornerZ[i];
         nor[o] = nx; nor[o + 1] = ny; nor[o + 2] = nz;
         col[o4] = r; col[o4 + 1] = g; col[o4 + 2] = bl; col[o4 + 3] = bedding;
-        shade[o] = cornerShade[i * 3]; shade[o + 1] = cornerShade[i * 3 + 1]; shade[o + 2] = cornerShade[i * 3 + 2];
+        shade[o4] = cornerShade[i * 3]; shade[o4 + 1] = cornerShade[i * 3 + 1]; shade[o4 + 2] = cornerShade[i * 3 + 2];
+        shade[o4 + 3] = cornerUnder[i] ? 0 : 255;
         v++;
       }
     };
@@ -696,7 +822,7 @@ export class Terrain {
         pos[o] = nodeX[i]; pos[o + 1] = nodeY[i]; pos[o + 2] = nodeZ[i];
         nor[o] = bnx; nor[o + 1] = bny; nor[o + 2] = bnz;
         col[o4] = r; col[o4 + 1] = g; col[o4 + 2] = bl; col[o4 + 3] = bedding;
-        shade[o] = nodeAo[i]; shade[o + 1] = nodeEast[i]; shade[o + 2] = nodeWest[i];
+        shade[o4] = nodeAo[i]; shade[o4 + 1] = nodeEast[i]; shade[o4 + 2] = nodeWest[i]; shade[o4 + 3] = 255;
         v++;
       }
     };
@@ -871,6 +997,8 @@ export class Terrain {
     const adorn = (t: Tile, wx: number, wy: number, i00: number) => {
       seedRnd(hash2(seed ^ 0x51ed, wx, wy));
       const tone = cornerTone[i00], drift = cornerDrift[i00], h = hc[i00];
+      // The water this tile stands in (its own level, wherever in the world that is) and how deep it is here.
+      const level = cornerWater[i00] === cornerWater[i00] ? cornerWater[i00] : h, deep = level - h;
       cover.shade(cornerShade[i00 * 3], cornerShade[i00 * 3 + 1], cornerShade[i00 * 3 + 2]);
       // Broadleaf woods hold the odd stand of pine, more of them as the land climbs.
       const piney = (h - 9) / 4 + drift * 1.7 + (rnd() - 0.5) * 0.6 > 0;
@@ -927,14 +1055,14 @@ export class Terrain {
           const r = rnd();
           // Reed beds hug a lake's shore, in patches. The sea has none: salt water keeps them out.
           // A few stones break the surface of either.
-          if (t === Tile.LakeShallows && h > -0.3 && drift > -0.05 && r < 0.78) {
+          if (t === Tile.LakeShallows && deep < 0.3 && drift > -0.05 && r < 0.78) {
             spot();
-            reeds(6 + Math.floor(rnd() * 5), Math.max(0, WATER_Y - py));
-          } else if (h > -0.9 && r > 0.988) {
+            reeds(6 + Math.floor(rnd() * 5), Math.max(0, level - py));
+          } else if (deep < 0.9 && r > 0.988) {
             // Only the top of a stone shows: it sits just under the surface, not on the seabed.
             spot();
             const rr = 0.2 + 0.22 * rnd();
-            cover.lump(px, Math.max(py, WATER_Y - 0.1), pz, rr, 0.16 + 0.2 * rnd(), WET_STONE[0], WET_STONE[1], false);
+            cover.lump(px, Math.max(py, level - 0.1), pz, rr, 0.16 + 0.2 * rnd(), WET_STONE[0], WET_STONE[1], false);
           }
           break;
         }
@@ -996,15 +1124,40 @@ export class Terrain {
           if (tone < 0.3) {
             if (r < 0.55) {
               spot();
-              reeds(4 + Math.floor(rnd() * 4), 0);
+              reeds(4 + Math.floor(rnd() * 4), Math.max(0, level - py));
             }
           } else if (r < 0.7) tuft(6, 0.3, 0.6, 0.05, 0.6, SEDGE_TIP, 0.85);
           else if (r < 0.76) {
             spot();
-            reeds(3 + Math.floor(rnd() * 3), 0);
+            reeds(3 + Math.floor(rnd() * 3), Math.max(0, level - py));
           }
           if (rnd() < 0.07) blooms(2, YELLOW);
           else if (rnd() < 0.04) blooms(2, COTTON);
+          break;
+        }
+        case Tile.Stream: {
+          const r = rnd();
+          // A stream runs over stones that break its surface; a few reeds stand at its edge.
+          if (r < 0.22) {
+            const n = 1 + Math.floor(rnd() * 3);
+            for (let k = 0; k < n; k++) {
+              spot();
+              const rr = 0.07 + 0.12 * rnd();
+              cover.lump(px, Math.max(py, level - 0.07), pz, rr, 0.08 + 0.1 * rnd(), WET_STONE[0], WET_STONE[1], false);
+            }
+          } else if (r < 0.28) {
+            spot();
+            reeds(3 + Math.floor(rnd() * 3), Math.max(0, level - py));
+          }
+          break;
+        }
+        case Tile.River: {
+          // Deep water: only the odd boulder stands out of it.
+          if (rnd() > 0.985) {
+            spot();
+            const rr = 0.22 + 0.25 * rnd();
+            cover.lump(px, Math.max(py, level - 0.1), pz, rr, 0.18 + 0.2 * rnd(), WET_STONE[0], WET_STONE[1], false);
+          }
           break;
         }
         case Tile.Cliff: {
@@ -1042,7 +1195,8 @@ export class Terrain {
           tri(fa[0], fa[1], fa[2], t, edited, j0, 0);
           tri(fb[0], fb[1], fb[2], t, edited, j1, 7);
         }
-        if (Math.min(hc[i00], hc[i10], hc[i01], hc[i11]) < 0.12) {
+        // Water is drawn over a tile if any of it is under, or nearly under, the water beside it.
+        if (Math.min(hc[i00] - cornerWater[i00], hc[i10] - cornerWater[i10], hc[i01] - cornerWater[i01], hc[i11] - cornerWater[i11]) < 0.12) {
           waterIndex.push(fa[0], fa[1], fa[2], fb[0], fb[1], fb[2]);
         }
         // What players build is bare: paving a tile clears what grew there.
@@ -1056,7 +1210,7 @@ export class Terrain {
     ground.setAttribute('position', new BufferAttribute(full ? pos : pos.slice(0, v * 3), 3));
     ground.setAttribute('normal', new BufferAttribute(full ? nor : nor.slice(0, v * 3), 3, true));
     ground.setAttribute('aColor', new BufferAttribute(full ? col : col.slice(0, v * 4), 4, true));
-    ground.setAttribute('aShade', new BufferAttribute(full ? shade : shade.slice(0, v * 3), 3, true));
+    ground.setAttribute('aShade', new BufferAttribute(full ? shade : shade.slice(0, v * 4), 4, true));
     ground.computeBoundingSphere();
 
     const group = new Group();
@@ -1064,17 +1218,20 @@ export class Terrain {
     group.add(new Mesh(ground, groundMat));
 
     // Water: only where there is some, on the same corners and diagonals as the ground so the shoreline lines up.
+    // Each corner carries its own level: the sea's, a lake's, or a river's as it falls.
     let water: BufferGeometry | null = null;
     if (anyWater && waterIndex.length) {
       const wpos = new Float32Array(N * N * 3), depth = new Float32Array(N * N);
       for (let i = 0; i < N * N; i++) {
-        wpos[i * 3] = cornerX[i]; wpos[i * 3 + 1] = WATER_Y; wpos[i * 3 + 2] = cornerZ[i];
-        depth[i] = WATER_Y - hc[i];
+        const level = cornerWater[i] === cornerWater[i] ? cornerWater[i] : WATER_Y;
+        wpos[i * 3] = cornerX[i]; wpos[i * 3 + 1] = level; wpos[i * 3 + 2] = cornerZ[i];
+        depth[i] = level - hc[i];
       }
       water = new BufferGeometry();
       water.setAttribute('position', new BufferAttribute(wpos, 3));
       water.setAttribute('aDepth', new BufferAttribute(depth, 1));
       water.setAttribute('aLake', new BufferAttribute(cornerLake.slice(), 1));
+      water.setAttribute('aFlow', new BufferAttribute(cornerFlow.slice(), 2));
       water.setAttribute('aShade', new BufferAttribute(cornerShade.slice(), 3, true));
       water.setIndex(waterIndex);
       water.computeBoundingSphere();

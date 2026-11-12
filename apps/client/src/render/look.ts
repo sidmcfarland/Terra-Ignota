@@ -159,7 +159,7 @@ export const U = {
   uWind: { value: new Vector4(1, 0, 0, 0) },
   /** Mist. rgb: its colour in this light; a: how thick it lies in the low ground, 0–1. */
   uFog: { value: new Vector4(1, 1, 1, 0) },
-  /** x: the height below which mist is thickest; y: the height at which it has thinned to nothing; z: the water level. */
+  /** x: the height below which mist is thickest; y: the height at which it has thinned to nothing; z: unused. */
   uFogBand: { value: new Vector3(0.3, 6, 0) },
   /** The year. x: spring; y: autumn; z: winter (each 0–1); w: how much snow lies, 0–1. */
   uSeason: { value: new Vector4(0, 0, 0, 0) },
@@ -268,17 +268,18 @@ vec3 seasonOn(vec3 albedo) {
   albedo = mix(albedo, l * vec3(1.3, 1.08, 0.72), green * uSeason.z * 0.7);
   return albedo * (1.0 - 0.2 * uRain);
 }
-// Snow settles in drifts on whatever faces the sky (n is the surface's normal), but not under water.
+// Snow settles in drifts on whatever faces the sky (n is the surface's normal), but not under water
+// (dry is 1 on dry ground, 0 on a lake's or river's bed).
 // Where it lies is decided by real noise: the paper's grain, read at two scales, so drifts are broad
 // with ragged edges and have no pattern. (A sum of sine waves was used first; cut off at a level it
 // leaves round bare patches in rows, which read as polka dots.) Snow also goes first from slopes that
 // face the midday sun, so the land itself shapes the cover.
-vec3 snowOn(vec3 albedo, vec3 p, vec3 n) {
+vec3 snowOn(vec3 albedo, vec3 p, vec3 n, float dry) {
   if (uSeason.w <= 0.0) return albedo;
   float grain = 0.6 * texture2D(uGrain, p.xz * 0.0041).r + 0.4 * texture2D(uGrain, p.xz * 0.0137 + 0.37).r;
   float drift = clamp(0.5 + (grain - 0.5) * 3.2 + 0.5 * (n.z * 0.95 - n.x * 0.31), 0.0, 1.0);
   float cover = smoothstep(drift - 0.1, drift + 0.1, uSeason.w * 1.5) * smoothstep(0.0, 0.15, uSeason.w)
-    * smoothstep(0.45, 0.85, n.y) * step(uFogBand.z + 0.02, p.y);
+    * smoothstep(0.45, 0.85, n.y) * dry;
   // Snow does not lie on desert sand (told by its colour: far more red than green).
   cover *= 1.0 - smoothstep(1.25, 1.5, albedo.r / max(albedo.g, 0.01));
   return mix(albedo, vec3(0.8, 0.85, 0.93), cover);
@@ -351,7 +352,7 @@ export function groundMaterial(): ShaderMaterial {
   return material(
     VERT_COMMON + /* glsl */ `
 attribute vec4 aColor;
-attribute vec3 aShade;
+attribute vec4 aShade;
 varying vec3 vLit;
 varying vec3 vWash;
 varying float vForm;
@@ -362,10 +363,10 @@ void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float reveal = revealAt(world.xz);
   world.y = mix(-0.03, world.y, riseOf(reveal));
-  vec3 albedo = snowOn(seasonOn(toLinear(aColor.rgb)), vec3(world.x, position.y, world.z), normal);
+  vec3 albedo = snowOn(seasonOn(toLinear(aColor.rgb)), vec3(world.x, position.y, world.z), normal, aShade.w);
   // aColor.a: how strongly the rock's bedding shows here (cliffs, and bare mountain rock more faintly).
   vStrata = vec2(aColor.a, position.y);
-  vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade, world.xz)) + lampOn(world.xyz, normal) * aShade.x;
+  vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade.xyz, world.xz)) + lampOn(world.xyz, normal) * aShade.x;
   vLit = mistOn(albedo * light, world.xyz, 1.0);
   vForm = dot(light, vec3(0.3333));
   vWash = mix(vec3(1.0), albedo / uParchment, 0.42);
@@ -473,9 +474,9 @@ void main() {
   albedo = mix(albedo, vec3(0.2, 0.135, 0.085) * ramp, bare * 0.85);
   local.xz = mix(local.xz, origin.xz + (local.xz - origin.xz) * 0.5, bare);
 #endif
-  albedo = snowOn(albedo, root.xyz, n);
+  albedo = snowOn(albedo, root.xyz, n, 1.0);
 #else
-  albedo = snowOn(seasonOn(albedo), root.xyz, n);
+  albedo = snowOn(seasonOn(albedo), root.xyz, n, 1.0);
   // Grass and leaves are supple: the tip goes with every gust, and bent grass shows its paler side.
   // The lean grows with height, a little less for tall things, which are stiffer. The flutter does not
   // grow with height: a reed four times as tall as a grass blade quivers by the same small amount.
@@ -518,8 +519,10 @@ export function waterMaterial(): ShaderMaterial {
     VERT_COMMON + /* glsl */ `
 attribute float aDepth;
 attribute float aLake;
+attribute vec2 aFlow;
 attribute vec3 aShade;
 varying float vLake;
+varying vec2 vFlow;
 varying vec3 vWorld;
 varying float vDepth;
 varying float vShadow;
@@ -535,10 +538,16 @@ void main() {
   // A lake lies stiller than the sea.
   float swell = 0.05 * smoothstep(0.05, 1.2, aDepth) * rise * (0.7 + 0.9 * uWind.z) * (1.0 - 0.6 * aLake);
   vLake = aLake;
+  vFlow = aFlow;
   vGust = windAt(world.xz).x;
   vFog = fogAt(world.xyz);
   vFogLight = fogLight(world.xyz);
-  world.y += swell * (sin(world.x * 0.9 + uTime * 1.1) + sin(world.z * 1.3 - uTime * 0.8 + world.x * 0.4));
+  // The swell is read from the grain at two scales that drift against each other, so its crests never
+  // line up. (It was two sine waves, whose crests fell into rows; the sun's glint then lit the sea in a
+  // regular pattern of patches.)
+  float heave = texture2D(uGrain, world.xz * 0.0078 + uTime * vec2(0.0041, 0.0027)).r
+    + texture2D(uGrain, world.xz * 0.0101 - uTime * vec2(0.0036, -0.0031)).r - 1.0;
+  world.y += swell * 3.2 * heave;
   vWorld = world.xyz;
   vDepth = aDepth;
   vLamp = lampOn(world.xyz, vec3(0.0, 1.0, 0.0));
@@ -553,6 +562,7 @@ uniform vec3 uLakeShallow;
 uniform vec3 uLakeDeep;
 uniform vec3 uFoam;
 varying float vLake;
+varying vec2 vFlow;
 varying vec3 vWorld;
 varying float vDepth;
 varying float vShadow;
@@ -565,12 +575,24 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 void main() {
   // Face normal from screen-space derivatives: each ripple facet catches the light on its own.
   vec3 n = cross(dFdx(vWorld), dFdy(vWorld));
+  // How steeply the water itself falls here: nothing on a lake or a slow river, a lot where it drops.
+  // The level part of its normal points the way it falls.
+  vec3 slope = n * (n.y < 0.0 ? -1.0 : 1.0) / max(length(n), 1e-6);
+  float fall = 1.0 - slope.y;
   n = normalize(vec3(n.x * 5.0, abs(n.y), n.z * 5.0));
   float ndl = max(dot(n, uSunDir), 0.0);
   vec3 light = uSunColor * (ndl * vShadow) + mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5) + vLamp;
   // A gust ruffles the surface and darkens it as it passes (a cat's paw).
-  float deep = smoothstep(0.0, 2.4, vDepth);
+  // Fresh water darkens with depth sooner than the sea: a river a tile deep already hides its bed.
+  float deep = smoothstep(0.0, mix(2.4, 1.3, vLake), vDepth);
   vec3 col = mix(mix(uShallow, uDeep, deep), mix(uLakeShallow, uLakeDeep, deep), vLake) * light * (1.0 - 0.16 * vGust);
+  // The current: streaks of lighter and darker water drawn out along the flow and carried down it.
+  float run = length(vFlow);
+  if (run > 0.02) {
+    vec2 dir = vFlow / run;
+    float streak = texture2D(uGrain, vec2(dot(vWorld.xz, vec2(-dir.y, dir.x)) * 0.21, dot(vWorld.xz, dir) * 0.035 - uTime * 0.055)).r;
+    col *= 1.0 + 0.36 * min(run, 1.0) * (streak - 0.5);
+  }
   float glint = pow(max(dot(n, normalize(uSunDir + uViewDir)), 0.0), 48.0);
   col += uSunColor * (glint * 0.5 * uGlint * vShadow);
   float alpha = mix(0.6, 0.96, smoothstep(0.0, 1.6, vDepth));
@@ -581,6 +603,15 @@ void main() {
   foam *= 1.0 - 0.55 * vLake;
   col = mix(col, uFoam * (light * 0.9), foam * 0.8);
   alpha = max(alpha, foam * 0.75);
+  // White water: where a river drops over a step or one lake spills into another, the surface breaks
+  // into foam that streams down the drop.
+  float white = smoothstep(0.04, 0.3, fall);
+  if (white > 0.0) {
+    vec2 down = normalize(slope.xz + 1e-5);
+    float rush = texture2D(uGrain, vec2(dot(vWorld.xz, vec2(-down.y, down.x)) * 0.45, dot(vWorld.xz, down) * 0.1 - uTime * 0.6)).r;
+    col = mix(col, uFoam * (uSkyColor + uSunColor * 0.5), white * (0.45 + 0.55 * smoothstep(0.3, 0.7, rush)));
+    alpha = max(alpha, white * 0.95);
+  }
   // Rain pocks the surface: a scatter of small bright rings, each gone in a moment.
   if (uRain > 0.0) {
     vec2 cell = vWorld.xz * 3.3 + 0.37 * vWorld.zx, in_ = fract(cell) - 0.5;
