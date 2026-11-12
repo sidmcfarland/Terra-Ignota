@@ -288,6 +288,13 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
 - **Biomes come from worldgen's tiles** (M4c): sea and lake (each deep and shallow), sand, grass, broadleaf forest, conifer forest, meadow, marsh, desert, tundra, rock, cliff and snow. Each has two ground tones, its own plants, and its own rules in `adorn`. Where two meet, the facets between them take a mix of both, so there are no hard borders except cliffs.
 - **Heights come from the shared rule's own curve** (`heightOf`), so a tile the rules call a cliff is drawn exactly as steep as the rule measured it.
+- **Cliffs are sheer** (milestone 8). A cliff tile is not one steep slope: a vertical wall runs through it, with level ground above and below. How it is built, in `terrain.ts` (`cliffTile`):
+  - Every corner near a cliff is on the upper or the lower side of the drop, by whether it stands above or below the middle of the heights around it.
+  - The wall crosses each edge of a cliff tile that joins an upper corner to a lower one, half-way along, so it follows the cliff's contour from tile to tile and turns corners with it.
+  - A corner that only cliff tiles touch is moved to the level, and takes the colours, of the open ground on its own side. Grass then runs to the cliff's edge and the beach to its foot, and the wall takes the whole drop.
+  - **Open ground is never reshaped.** Tiles an explorer can stand on keep their true heights. Where a cut edge is shared with such a tile, the cliff tile closes the gap with a small upright bank, so the mesh has no holes.
+  - Everything is decided per corner and per edge from generated tiles and heights, so neighbouring tiles and neighbouring chunks always agree.
+  - A cliff a tile or two deep becomes one clean face. A broad mountain face that is cliff from top to bottom stays craggy, sloping rock.
 - **Trees outside the known world are not drawn.** A chunk thick with trees splits them into four quarters, and quarters wholly beyond the known world are skipped; the shader also stops early for any tree that is not inked in yet. This halved the triangles in a forest.
 - The HUD and debug panel are recoloured to parchment and sepia ink. Fonts and proper UI chrome are still to come.
 - There is no audio or character model yet.
@@ -325,6 +332,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Each new biome is told apart by its ground first, its plants second, and by what is missing | A desert reads from its dunes and bare sand, tundra from frost and the lack of anything tall, marsh from dark pools and sedge. No new models were needed, so the world stays one family. Awaiting Sid. |
 | 2026-11-12 | Lakes differ from the sea in the water itself: greener, darker, stiller, edged with reeds and no surf | A lake and a sea bay should never be confused at a glance, and the difference should be visible from far out. Awaiting Sid. |
 | 2026-11-12 | Cliffs show bedding: level seams drawn by the ground shader from the height of each pixel | A bare steep facet is a grey smear. Seams that run level across a whole escarpment make it read as rock and as one continuous wall. It costs a few operations per pixel and no texture. Awaiting Sid. |
+| 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Awaiting Sid. |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Awaiting Sid. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Awaiting Sid. |
@@ -350,10 +358,13 @@ The order is by how much each step decides the look of everything after it. Each
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
 | 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
-| 8 | **Finishing:** variations, extra effects, loose ends from the list below | Polish last. | Next, while 7 is on hold |
+| 8 | **Finishing:** in the order Sid set on 2026-11-12: (1) sheer cliff faces, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1) done.** (2) next |
 
 ### Kept for later (found along the way)
-- **Chunk generation belongs in a worker.** This is the biggest known risk to 60 fps on a phone. Building a chunk's mesh takes about 4 ms here on a desktop (plus generating its tiles and heights), so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame, which is not a fix. `packages/shared` is isomorphic, so it can run in a worker unchanged.
+- **Chunk generation belongs in a worker.** This is the biggest known risk to 60 fps on a phone: building a chunk's mesh takes about 4 to 5 ms here on a desktop, plus generating its tiles and heights, so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame, which is not a fix. **On hold (Sid, 2026-11-12):** M4c step 2 is adding a worker for river regions, so this waits until that is merged and then shares it.
+- **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do.
+- **A diagonal terrace is a run of short walls and banks,** not one straight face, because each wall has to end on a tile's edge. It reads as a rocky step.
+- **Walls cast no shadow of their own.** Shadows are still baked from the height field, which sees the cliff as the slope it used to be. The shade is roughly right and softer than a sheer face would cast.
 - **Pixel ratio on phones.** Still capped at 2. Try 1.5, or scale it by measured frame time.
 - **Avatars** are a placeholder playing piece. Real characters wait for M5.
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
@@ -388,11 +399,22 @@ The order is by how much each step decides the look of everything after it. Each
 - **Paving a tile clears what grew on it**, and un-paving brings the same plants back, because plants come from the seed and position.
 - **The renderer drew the land on a different curve from the one the rules use** (found in milestone 7). M4c's shared rule calls a tile a cliff when its corners differ by more than 1.2 tiles on the curve `heightOf` (30·u^1.5). The renderer was still drawing with its own older curve (30·u^1.6), so a cliff was drawn a little less steep than the rule measured. The renderer now calls `heightOf`, so what blocks you is exactly what you see. Mountains are about 5% taller as a result.
 - **This branch is `main` plus milestone 7.** `main` was merged in on 2026-11-12 as a fast-forward (it already held milestones 1 to 6), which brought protocol 8. `npm run e2e` now takes its ports from the environment, so this worktree runs it beside the main checkout with `E2E_SIGNAL_PORT=8797 E2E_SEED_PORT=8798 E2E_CLIENT_PORT=4174 E2E_REUSE=0 npm run e2e`.
-- **Cliffs are steep slopes, not vertical faces.** The chunk mesh is a height field, so a cliff tile is one very steep pair of facets about a tile wide. It reads as a cliff, and the bedding helps, but a truly sheer wall needs side faces in the mesh. PLAN.md already lists this.
+- **Cliffs were steep slopes, not vertical faces.** Fixed in milestone 8: see "Cliffs are sheer" above.
 - **Streams and rivers have colours but have not been seen.** Nothing generates them until M4c step 2, so their look is untested.
 
 ### Measured performance
 On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+
+**After milestone 8, step 1 (sheer cliffs),** fully zoomed out in a 1277×1234 window. Walls add few triangles: a cliff tile goes from 2 triangles to between 6 and 12, and cliffs are about one tile in two hundred.
+
+| Spot | Draw calls | Triangles | Frame |
+|---|---|---|---|
+| Sea cliff (`276,-2172`) | 68 | 90.5k (89.6k before) | 3.0 ms (3.0 ms before) |
+| Terrace cliffs (`-1524,-1020`) | 51 | 76k | 2.5 ms |
+| Mountain face by the desert (`-3216,720`) | 38 | 55k | 2.3 ms |
+| Deep conifer forest (`144,48`), for comparison | 75 | 154k (unchanged) | 3.1 ms |
+
+- **Chunk build, warm:** 5.1 ms mean (7.7 ms worst) over 14 chunks at the sea cliff. This spot was not measured before the change, so there is no before-and-after figure; conifer forest measured 4.3 ms in milestone 7.
 
 **After milestone 7**, on the M4c terrain, fully zoomed out in a 1277×1234 window (larger than earlier milestones' 862×1234):
 
@@ -484,3 +506,4 @@ The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show diff
 30. **Tundra as lichen green and russet with frost patches,** cotton-grass and nothing tall.
 31. **Marsh as dark wet olive with pools, sedge tussocks and reeds.**
 32. **Conifer forest as close, tall pines on dark needle litter** (six trees to every ten tiles; lowered from seven to keep the heaviest view inside the budget).
+33. **Sheer cliffs as built:** one vertical face along the drop, grass to the edge, the beach to the foot, and open ground left at its true heights (so the rim is slightly ragged). The alternative is to level the ground beside a cliff as well, which is cleaner but draws walkable tiles flatter than they are.
