@@ -273,18 +273,36 @@ test('neighbouring hosts link up so players see across a zone border', async ({ 
 
   // B moves into the empty zone to the east, 40 tiles past the border: it hosts
   // that zone, and the two hosts link up because their zones are neighbours.
-  const [zx] = (await probe(a)).zone.split(',').map(Number);
+  const home = (await probe(a)).zone;
+  const [zx, zy] = home.split(',').map(Number);
+  const east = `${zx + 1},${zy}`;
   const border = (zx + 1) * ZONE_TILES;
   await teleport(b, border + ZONE_MARGIN + 8);
   await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
   await expect.poll(async () => (await probe(a)).borders, { timeout: 20_000 }).toBe(1);
   await expect.poll(async () => (await probe(b)).borders, { timeout: 20_000 }).toBe(1);
+  // B is now far from the others, who are still where they spawned: out of view both ways.
+  await expect.poll(() => sees(a, bId), { timeout: 10_000 }).toBe(false);
+  await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(false);
+
+  // Everyone gathers at the border. A host's own position is taken as it is, but a host
+  // only moves a client as far as it could have walked, and not onto water or rock, so a
+  // client can't be teleported across a random world. C gets to the border the way a
+  // player would arrive there instead: it crosses into the east zone and back, and joins
+  // its home zone again 40 tiles from the border.
+  await teleport(c, border + ZONE_MARGIN + 8);
+  await expect.poll(async () => (await probe(c)).zone, { timeout: 10_000 }).toBe(east);
+  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
+  await teleport(c, border - ZONE_MARGIN - 8);
+  await expect.poll(async () => (await probe(c)).zone, { timeout: 10_000 }).toBe(home);
+  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
+  await teleport(a, border - ZONE_MARGIN - 6);
+  // B steps over the border, inside the margin, so it stays in (and keeps hosting) its zone.
+  await teleport(b, border - 10);
+  await b.waitForTimeout(300);
+  expect((await probe(b)).zone).toBe(east);
 
   // Players near the border show up on the other side; C sees B through its host A.
-  // (B steps back towards the border; inside the margin, so it stays in its zone.)
-  await teleport(a, border - 10);
-  await teleport(c, border - 12);
-  await teleport(b, border + 20);
   await expect.poll(() => sees(a, bId), { timeout: 10_000 }).toBe(true);
   await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(true);
   await expect.poll(() => sees(b, aId), { timeout: 10_000 }).toBe(true);
@@ -308,7 +326,7 @@ test('neighbouring hosts link up so players see across a zone border', async ({ 
   // View is per player, not per zone. B comes back to the border while A walks to the far
   // side of its own zone: C, still at the border, and B see each other; A sees neither of
   // them, and neither sees A, though A is still C's host and still relays B to it.
-  await teleport(b, border + 20);
+  await teleport(b, border - 10);
   await teleport(a, border - 230);
   await expect.poll(() => sees(c, bId), { timeout: 10_000 }).toBe(true);
   await expect.poll(() => sees(b, cId), { timeout: 10_000 }).toBe(true);
@@ -383,9 +401,11 @@ test('a host drops messages beyond the budget of a client, and cuts off one that
   await expect.poll(() => editAt(a, x, y), { timeout: 10_000 }).toBe(PATH);
 
   // A client that keeps flooding is disconnected. It can come back, with a fresh budget.
+  // (The host stops counting when it cuts the link: after 170 to 200 more drops, depending on
+  // how much of its tolerance had refilled since the first flood.)
   const before = await dropped();
   await flood(600);
-  await expect.poll(dropped, { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 200);
+  await expect.poll(dropped, { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 150);
   await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).not.toBe('client');
   await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
   await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
@@ -473,11 +493,13 @@ test('edits replicate through the host and survive a reload', async ({ browser }
   await expect.poll(() => editAt(b, front[0], front[1]), { timeout: 10_000 }).toBe(expected);
   await expect.poll(() => editAt(a, front[0], front[1]), { timeout: 10_000 }).toBe(expected);
 
-  // Reloading B loads its edits from IndexedDB before it reconnects.
+  // Reloading B loads its edits from IndexedDB before it reconnects. (The tile the B key
+  // cycled can be the very one A walled, so that tile is expected as the key left it.)
+  const wall = ax === front[0] && ay === front[1] ? expected : WALL;
   await b.reload();
   await b.waitForFunction(() => (window as any).__ti?.edits);
   expect(await editAt(b, bx, by)).toBe(PATH);
-  expect(await editAt(b, ax, ay)).toBe(WALL);
+  expect(await editAt(b, ax, ay)).toBe(wall);
 });
 
 test('newcomers catch up from the host, and a returning player brings edits back', async ({ browser }) => {

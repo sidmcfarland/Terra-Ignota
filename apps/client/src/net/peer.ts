@@ -43,7 +43,10 @@ export class Peer {
     this.h = h;
     this.guard = guard;
     this.pc = new RTCPeerConnection({ iceServers });
-    this.pc.onicecandidate = (e) => this.sendSignal({ kind: 'ice', candidate: e.candidate?.toJSON() ?? null });
+    // (The end-of-candidates event isn't relayed: receivers ignore it, and it would be a third of a host's signalling.)
+    this.pc.onicecandidate = (e) => {
+      if (e.candidate) this.sendSignal({ kind: 'ice', candidate: e.candidate.toJSON() });
+    };
     this.pc.onconnectionstatechange = () => {
       const s = this.pc.connectionState;
       clearTimeout(this.discoTimer);

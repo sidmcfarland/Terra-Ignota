@@ -299,7 +299,10 @@ function summarize(o: Options, rows: Row[], all: Row[]): Summary {
   // keeping up with their ticks, and nothing logged as an error.
   if (!rows.length) s.problems.push('nothing was measured (the run ended before the measuring window)');
   if (s.connected.mean < 0.98) s.problems.push(`only ${pct(s.connected.mean)} of bots connected on average`);
-  if (s.connected.min < 0.95) s.problems.push(`connected bots dipped to ${pct(s.connected.min)}`);
+  // With churn on, a host is killed on purpose and its whole zone is between hosts for a moment,
+  // so the worst second says little; what counts then is how fast the zone comes back.
+  if (!o.churn && s.connected.min < 0.95) s.problems.push(`connected bots dipped to ${pct(s.connected.min)}`);
+  if (o.churn && s.failoverMs.p95 > 3000) s.problems.push(`reconnecting after a host change took ${s.failoverMs.p95}ms (95th percentile)`);
   if (!(s.snapsPerClient.median >= TICK_HZ - 1)) s.problems.push(`median client got ${s.snapsPerClient.median} snapshots/s, not ${TICK_HZ}`);
   if (!(s.snapsPerClient.p5 >= TICK_HZ * 0.75)) s.problems.push(`slowest 5% of clients got ${s.snapsPerClient.p5} snapshots/s or fewer`);
   if (s.hostTick.late > 0.05) s.problems.push(`${pct(s.hostTick.late)} of host ticks started late`);

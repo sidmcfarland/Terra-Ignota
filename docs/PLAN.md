@@ -26,6 +26,7 @@ packages/shared   protocol, worldgen, sim, CRDT, crypto (isomorphic)
 apps/client       PWA
 apps/signal       signaling + zone directory server
 apps/seed         headless always-on peer
+apps/bots         headless bot swarm for load tests
 infra/            docker-compose: signal + coturn + seed
 ```
 
@@ -35,6 +36,8 @@ infra/            docker-compose: signal + coturn + seed
 - **Host election**: deterministic, based on a score (desktop, foreground tab, uptime, RTT), with ties broken by public key. Mobile, battery-powered and backgrounded tabs are excluded. The seed peer hosts any zone that has no eligible host.
 - **Host migration**: the host streams snapshots to two backup peers. If the host drops, the next backup takes over within about 2s.
 - **Sim**: the host ticks at 20 Hz. Players control their own movement and the host sanity-checks it (speed and collision). Co-op play allows lenient checks.
+- **Interest**: the host sends each client only the players within that client's view radius (48–128 tiles, whatever its screen shows), including players relayed from neighbouring zones. Positions travel in a compact binary encoding (see M6).
+- **Limits**: a host holds every link to message-rate and size budgets, and paces catch-up itself (see M6).
 - **World edits**: signed ops in a per-chunk CRDT (last-writer-wins per tile, ordered by Lamport clock + public key). They're replicated to peers in the zone and to the seed.
 - **Discovery**: the signaling server keeps soft-state `world/zone → host` entries via heartbeats. It never sees gameplay. *Later:* replace it with a DHT or gossip.
 - **Join URL**: `https://<pages>/Terra-Ignota/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
@@ -48,7 +51,7 @@ infra/            docker-compose: signal + coturn + seed
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
-| M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | |
+| M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
 
 ## M3 design (agreed 2026-11-11)
@@ -67,6 +70,57 @@ infra/            docker-compose: signal + coturn + seed
 
 **e2e coverage.** A hard crash (host page closed with no goodbye; a backup takes over within about 2s) and a backgrounded host tab (immediate handoff).
 
+## M6: scale (built 2026-11-12, protocol 7)
+**Binary hot path.** The unreliable channel (position reports, snapshots, probes, the border stream and backup state) is encoded by a small hand-written codec, `packages/shared/src/codec.ts`. Integers are varints. Positions are fixed point at 1/64 tile, sent as offsets from one origin per message. A host gives each player a short number and announces who it is once (`meet`), so a nearby player costs about 5 bytes in a snapshot, where JSON with a 12-character id cost about 33. The reliable channel (edits, catch-up, announcements) stays JSON.
+
+**Per-viewer interest.** Each tick the host sends each client only the players within that client's view radius. The client asks for the radius its screen shows (`pos.view`), and the host holds it to 48–128 tiles; a player already in view stays in view 8 tiles further out, so one at the edge doesn't flicker. A client forgets a player its host has stopped sending after 500ms. Players relayed from neighbouring zones go through the same per-viewer cut, and so does the host's own view. The stream between two neighbouring hosts is still per zone (everyone within 168 tiles of the other zone): the sender can't know the other zone's viewers without the same stream coming back.
+
+**Limits and validation on hosts.**
+- Every link a host accepts (clients, neighbouring hosts, seeds) has a budget per channel: messages per second, a burst allowance and a size cap (`packages/shared/src/limits.ts`). Messages over budget are dropped unread. A peer that keeps overrunning (200 drops in a burst, or more than 20 a second for long) is disconnected; it can reconnect.
+- Catch-up is pulled by the host. A peer sends its digests once per link; the host asks for at most 4 chunks at a time, only chunks of its own zone, takes no more edits per chunk than the peer said it holds, and spends an edit budget (512/s, burst 4,096) as it asks. Edits it didn't ask for are refused. Before this, any client could send `edits` at any time, anywhere, at any rate, and only the signature was checked.
+- Edits from a neighbouring host must be within 168 tiles of the zone and fit a budget. The seed refuses edits far from the zone of the host that sent them.
+- A host only accepts positions within its zone's margin (+16 tiles), and holds a joining client's claimed position to that.
+- Edits a replica already has, or that would lose, are dropped before the signature check.
+
+**Bot swarm.** `npm run bots` (`apps/bots`) runs headless players: each is a real `Session` (the client's code, over node-datachannel) driven by a walker that uses the shared `step()`, crosses zone borders, paints tiles and hosts when elected. It can split over processes (`--procs`), kill bots on a timer (`--churn`), and prints a summary with a verdict. "Stable" in that verdict means: at least 98% of bots connected on average and 95% in the worst second, a median of at least 19 snapshots a second per client and at least 15 for the slowest 5%, at most 5% of host ticks late, and nothing logged as an error. With `--churn`, the worst-second test gives way to: 95% of reconnects after a host change within 3s.
+
+### M6 results (measured 2026-11-12)
+One machine ran everything: the signal server, every bot and both ends of every link. It is a 2008 Core i7-930 (4 cores, 8 threads), Windows 10, Node 22. Runs lasted 30–45s after the last bot joined. Unless noted: 25 bots per zone, 1 in 5 able to host, 1 in 4 walking across borders, view radius 64, one edit per bot every 50s, hosts are bots.
+
+| Run | Outcome | One snapshot | Snapshots per client | Bot host tick | All traffic | CPU |
+|---|---|---|---|---|---|---|
+| Protocol 6 (before), 100 bots, 4 zones | Not stable: 5.8% of ticks late, median 18 snapshots/s | 1,673 B | 28.9 kB/s | 9.2ms mean, 43ms worst | 3.30 MB/s | 3.8 cores |
+| Protocol 7, 100 bots, 4 zones | **Stable**: 99.9% connected, median 20 snapshots/s (slowest 5%: 16), 2.1% late, 32 border crossings handed off in 183ms (median) | 37 B | 0.7 kB/s | 5.5ms mean, 37ms worst | 159 kB/s | 2.75 cores |
+| Protocol 7, 100 bots, 4 zones, a bot killed every 4s (hosts and clients in turn) | Recovered every time: 79 reconnects after a host change, median 432ms, slowest 5% 493ms; 0.6% late; no errors | 40 B | 0.8 kB/s | 4.5ms mean, 19ms worst | 181 kB/s | 2.7 cores |
+| Protocol 7, 150 bots, 6 zones | Borderline: everyone connected and no failovers, but 8.2% of ticks late and the slowest 5% of clients got 12 snapshots/s | 34 B | 0.6 kB/s | 5.4ms mean, 47ms worst | 227 kB/s | 4.0 cores |
+| Protocol 7, 300 bots, 12 zones | **Not stable**: 76% connected, 60% of ticks late, 940 host changes, 272 links failed to open | 35 B | — | 6.7ms mean, 84ms worst | — | 7.2 of 8 threads |
+
+A real browser as the host (one headless Chromium tab hosting one zone, bots as its clients, same machine):
+
+| Clients | Host tick | Late ticks | Snapshots per client | Host's snapshot upload |
+|---|---|---|---|---|
+| 40 | 0.83ms mean, 7.9ms worst | 0% | 20/s | 34 kB/s |
+| 80 | 2.2ms mean, 5.2ms worst | 0% | 20/s | 138 kB/s |
+| 120 | 4.3ms mean, 27ms worst | 0% | 20/s | 286 kB/s |
+
+**Against the done-when.** "300 bots across zones stay stable" was not reached on this machine. The largest stable run was 100 bots across 4 zones.
+
+**What limited it: the machine.** A bot costs about 27ms of CPU per second, so 300 need about 8 cores and this machine has 4. A profile of a bot host shows where it goes: node-datachannel's native `send` takes about 0.16ms per message and dominates the tick, the rest of the WebRTC stack runs on its own threads, and the session's tick logic and the codec together are about 2% of CPU. A Chromium tab doing the same hosting job ticks about 8 times faster (0.83ms against 6.5ms for 40 clients). At 300 the starved hosts ticked late, clients reported them silent, the directory dropped them, and whole zones reconnected at once, which starved the machine further.
+
+**Why the design should hold at 300 (expected, not measured).** Zones don't share load: a host talks to its own clients and at most 8 neighbouring hosts, so 300 bots over 12 zones puts the same work on each host as 100 over 4, which ran stable. One browser tab hosted 120 clients, five times a zone's share of 300, without a late tick. A client's downstream is under 1 kB/s. What the 300-bot run adds that the 100-bot run doesn't is signal-server load, and the server took 300 joins and their heartbeats, though it wasn't profiled on its own.
+
+**To finish the done-when:** run `npm run bots -- --bots 300 --zones 12 --procs 8` on a machine with about 8 recent cores, or split the swarm over machines: the same `--world` and `--signal` on each, plus `--stun` if they aren't on one LAN. Bots from different runs join the same zones.
+
+**Findings (not built).**
+- **A crowd in one spot is still quadratic.** Interest management cuts traffic when players are spread out. If 120 players stand within view of each other, the host uploads about 120 × 119 × 5 B × 20/s = 1.4 MB/s. That needs a cap on players per snapshot (nearest first) or a lower rate for distant ones.
+- **A zone still can't outgrow its host.** A browser tab hosted 120 clients here, well past the advertised cap (4 per core, 48 at most), so the cap is conservative. Past what a host can really carry there is still no relief: no zone splitting, no relaying.
+- **Failover reconnects a whole zone at once.** After a takeover every client opens a new WebRTC link to the successor, and handshakes are the most expensive thing a peer does. On a shared, overloaded machine this turned into a storm. Real peers don't share a CPU, but the burst is real. Pre-connecting clients to the first backup (the M3 follow-up) removes it. The directory could also wait before dropping a second host of the same zone.
+- **Reach can't be enforced on catch-up.** The host now decides when and where catch-up edits arrive and how many, but it can't tell an edit made offline last week from one made out of reach a second ago, so a client that reconnects can still deliver edits anywhere in the zone, up to the catch-up budget. A new identity is free, so per-key budgets wouldn't hold either. This needs reputation, or giving up edits made offline.
+- **A huge clock wins forever.** Last-writer-wins takes any op with a higher clock, and nothing bounds the clock. An op at the largest safe integer can't be overwritten by anyone. The fix is a clock tied to time (a hybrid logical clock that hosts check against their own).
+- **The signal server's budget caps how fast one host can take joiners.** A browser host was measured sending 3 signalling messages per joining client; the end-of-candidates one is no longer sent, which leaves 2 (more with STUN candidates). The budget is 50/s with a burst of 200 (the burst is new). That covers a zone of about 60–100 reconnecting at once. Beyond that, candidates need batching.
+- **A Node peer is a slow host.** For the seed to host zones (M7), node-datachannel's `send` cost applies: a bot host spent 5.5ms a tick on 24 clients on this machine.
+- **Node timers on Windows fire in steps of about 16ms**, so a 50ms interval ran at 16 Hz. Sessions now book each tick against an ideal timeline, which also keeps the rate under load in browsers.
+
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
 - **Catching up (answered in M4a):** when a client connects, it sends its host a digest per zone chunk (count, highest clock and a hash of its ops). The host sends the chunks where it differs and asks for the chunks where the client has edits, so both converge. A new host already holds its zone's edits: it was a client there.
@@ -75,7 +129,9 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **Scarcity and inventory:** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts). Options: each player owns their inventory as signed state, or the host or seed arbitrates for each chunk.
 
 ## Current limitations (what M2 left for later)
-- **Seeing across borders is per zone, not per player (M6).** Neighbouring hosts link up (`net/border.ts`) and share players within `BORDER_VIEW` (3 chunks) of each other's zone. Range is measured to the other zone, so everyone in a zone sees a player standing near it, however far away they are. Per-viewer interest management comes in M6.
+- **Players pop in at the edge of the screen when zoomed far out.** A host sends players within at most 128 tiles of a client. At the widest zoom on a large monitor the screen shows about 167 tiles, so players appear a little inside its corners. Across a zone border the same applies.
+- **A crowd in one spot, and a zone bigger than its host can carry, are not handled.** See the M6 findings.
+- **Limits protect hosts only.** Clients and the seed don't budget what a host sends them (the seed only refuses edits far from that host's zone). A flooding peer is disconnected, not banned: it can reconnect, and a new peer id or key is free.
 - **Failover still reconnects clients (M3 follow-up).** The host streams its state (tick and validated positions) to two backups at 5 Hz, and the first eligible backup succeeds it. A hung host is found when a client sees 1s without snapshots and the directory's probe gets no reply within 750ms (e2e-tested at about 1.9s). After a takeover, clients still open a new WebRTC link to the successor. Pre-connecting clients to the first backup would cut that out.
 - **Backups don't change once chosen.** A backup keeps its place while it's present and eligible, so a newcomer with a better score doesn't replace it. This stops near-equal scores from reshuffling the order on every heartbeat.
 - **Election approximations.** A host's ping is its average round trip to its clients, while everyone else's is to the signal server, so the numbers aren't strictly comparable. If nobody in a zone can host (all opted out, mobile or backgrounded), the best of them hosts anyway. The track record is self-reported and kept per device in localStorage.
@@ -83,11 +139,12 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **The seed only syncs when a link opens.** It catches up with a zone when it first links to that zone's host, then receives new edits live. An edit made while no seed was connected reaches the seed only when some host it links to holds that edit.
 - **The seed's disk store is one append-only file per world** (`DATA_DIR/<world>.jsonl`). It's compacted on load when superseded lines dominate, and loaded whole per world.
 - **Anyone can run a seed and receive every world's edits.** That's fine while edits are public co-op data. Restricting it would need seed credentials on the signal server.
-- **Edit checks slow casual misuse but can't stop a determined griefer.** A host accepts a live edit only from its author, within 4 tiles of where it sees that player, and at most 10 a second. Ops arriving through catch-up are checked only for a valid signature, because they can be older edits or another player's edits being passed along. Real protection needs reputation (see Risks).
+- **Edit checks slow casual misuse but can't stop a determined griefer.** A host accepts a live edit only from its author, within 4 tiles of where it sees that player, and at most 10 a second. Catch-up is now pulled and paced by the host (M6): only chunks of its zone that it asked for, no more than the peer said it holds, within a budget. But catch-up edits can be older edits or another player's, so the host can't check reach on them: a client that reconnects can still deliver edits anywhere in the zone, at the catch-up budget's rate. Nothing bounds an edit's clock either. Real protection needs reputation (see Risks and the M6 findings).
 - **A rejected edit stays in the painter's own copy.** Nothing tells the client the host refused it, so the two disagree on that tile until it's edited again. The B key only paints adjacent tiles, so normal play doesn't hit this. The host should send rejections back.
 - **Each device loads all its edits for a world at startup.** That's fine at today's sizes. Loading per chunk can wait until worlds grow.
 - **Identity is per device, not per player.** The Ed25519 key lives in IndexedDB, so clearing site data or switching devices makes a new identity. `peerId` is still a random id per tab, used only for connections.
-- **The protocol is JSON (M6).** Snapshots send every player in the zone. Switch to a binary encoding and interest management in M6.
+- **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 210 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
+- **The 300-bot target is unproven.** See the M6 results: stable at 100 bots on the dev machine, which runs out of CPU before 300.
 - **The deployed site is solo-only until M7.** Multiplayer on Pages needs the `SIGNAL_URL` repository variable, or `#signal=wss://…` in the link.
 
 ## Decisions
@@ -114,6 +171,19 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Art style: a low-poly diorama on a parchment map; unexplored land is blank parchment that inks in | It builds on the existing renderer, stays small for a PWA and makes the game's name the look. Details in ART_DIRECTION.md. |
 | The visual foundation (lighting, shaders, biomes, time of day, weather) is built before M5; bulk assets wait for the M5 mechanics | The foundation doesn't depend on mechanics. Props, icons and sounds do. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
+| Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |
+| A hand-written binary codec for the unreliable channel only; reliable messages stay JSON | Snapshots and position reports are almost all the traffic. A varint codec is about 250 lines and needs no dependency. Reliable messages are rare, and JSON keeps them easy to read and change. |
+| Positions are fixed point at 1/64 tile | Half a hundredth of a tile of error, below what's visible and inside what the e2e tests check, in 2 bytes per axis for anyone within 128 tiles of the message's origin. |
+| Hosts refer to players by a short number, announced once per viewer (`meet`) | Sending the 12-character peer id with every position would triple a snapshot. Numbers are per host and never reused, so a stale one can't point at the wrong player. |
+| A client asks for its view radius; the host holds it to 48–128 tiles | The screen shows from about 30 to 170 tiles depending on zoom and size. One fixed radius would either send most of a zone to everyone or make players pop in on screen. |
+| A client drops a player after 500ms without positions, with no "left your view" message | Nothing to keep in step between host and client, and a lost packet can't leave a ghost behind. |
+| The stream between neighbouring hosts stays per zone (168 tiles); the per-viewer cut is made by the receiving host | The sender would need to know where the other zone's viewers are, which is the same stream in reverse. It's one stream per pair of neighbours, so it doesn't grow with clients. |
+| Over-budget messages are dropped unread; a peer that keeps flooding is disconnected, not banned | Dropping keeps honest peers with a burst working. Only cutting the link stops a flood's bandwidth. A ban would need an identity that isn't free to replace. |
+| Catch-up is pulled by the host, a few chunks at a time, for its own zone only | It ends unsolicited pushes of edits and bounds the cost of verifying them. It can't enforce reach: an old edit and a new one look alike (see the M6 findings). |
+| A host refuses positions outside its zone's margin, and edits far from its zone | A host is the authority for its zone only. It keeps the reach check meaningful and stops one host spreading edits world-wide. |
+| Sessions book each tick against an ideal 20 Hz timeline | Timers that fire late (Node on Windows, busy tabs) then cost jitter instead of tick rate. After a long stall the timeline restarts, so ticks aren't replayed in a burst. |
+| The signal server lets a socket save up 200 messages | A new host relays an answer and candidates for every client of its zone at once after a takeover. A flat 50/s would have cut that off at about 15 clients. |
+| The e2e ports are configurable, and `E2E_REUSE=0` refuses a running server | Several checkouts and sessions test on one machine; reusing another checkout's server tests the wrong code. |
 
 ## Risks
 - **Backgrounded tabs throttle timers**, so a hidden tab hands off hosting immediately.
