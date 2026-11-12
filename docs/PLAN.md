@@ -154,11 +154,11 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **M5 design:** bridges and steps already exist to cross deep water and snow, so rivers and cliffs give them more to do. Landmark and resource placement should be built on the new terrain.
 - **Chunk building in a worker** (a visual foundation finding) becomes necessary, not optional.
 
-**To decide before building.**
-1. Can players climb steep slopes, or do cliffs block until someone builds steps?
-2. Do rivers block, slow (wade) or carry the player?
-3. Which new tile types to add (river, lake, cliff, and which biomes), since each needs a look.
-4. The region size for step 2.
+**Decided (2026-11-12).**
+1. **Cliffs block.** Gentle and moderate slopes are walkable. Sheer cliff faces block like walls until a player builds Steps (from the M5 design). No slope-based slowing.
+2. **Streams wade, rivers block.** A stream is crossed slowly, like shallow water today. A river is deep and blocks until someone builds a Bridge or finds a ford. No current that carries the player; that could come later.
+3. **New ground, the core set.** Water: river, stream and lake, separate from sea. Land: cliff, plus four climate biomes: desert, tundra, marsh and conifer forest. Each needs its own look in the visual work.
+4. **Region size is measured, then picked.** The build tries sizes from about 1,000 to 4,000 tiles across and picks the largest whose first compute stays within a budget suited to a phone. The choice and the numbers get recorded here.
 
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
@@ -210,6 +210,8 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Art style: a low-poly diorama on a parchment map; unexplored land is blank parchment that inks in | It builds on the existing renderer, stays small for a PWA and makes the game's name the look. Details in ART_DIRECTION.md. |
 | The visual foundation (lighting, shaders, biomes, time of day, weather) is built before M5; bulk assets wait for the M5 mechanics | The foundation doesn't depend on mechanics. Props, icons and sounds do. |
 | Replace threshold-on-noise terrain with layered maps, then region-simulated rivers, before M5 | Sid wants terrain that looks natural. M5 wipes worlds at its first slice and then freezes landmark and resource placement, so before M5 is the cheapest time. |
+| Cliffs block, streams wade, rivers block | They turn terrain into routes and obstacles, and give the M5 Steps and Bridges a purpose inland. Slope slowing and river currents were left out to keep `step()` and the host's checks simple. |
+| New terrain adds river, stream, lake, cliff, desert, tundra, marsh and conifer forest | Enough that climates feel different, while staying a set the visuals can do well. Cohesion over variety. |
 | Rivers come from simulating each large region, not from carved noise lines | Sid asked for rivers shaped by gravity. Noise lines are cheaper but don't truly flow downhill. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 | Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |
