@@ -144,9 +144,11 @@ export function tileAt(seed: number, x: number, y: number): Tile {
 /**
  * The tile a point would be if the ground around it were level: no cliffs, no scree. One sample where
  * tileAt takes four, for maps drawn at many tiles per pixel. Not for rules: use tileAt.
+ * With `water` false it leaves out rivers and filled lakes too, so no drainage region is computed.
  */
-export function tileAtFlat(seed: number, x: number, y: number): Tile {
-  landAt(seed, x, y, g);
+export function tileAtFlat(seed: number, x: number, y: number, water = true): Tile {
+  if (water) landAt(seed, x, y, g);
+  else groundAt(seed, x, y, g);
   return classify(seed, x, y, g.u, g.u, g.u, g.u, g.inland, g.temp, g.rain, g.bog, g.lake, g.channel);
 }
 

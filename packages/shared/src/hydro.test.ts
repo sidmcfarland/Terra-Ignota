@@ -56,9 +56,8 @@ describe('drainage regions', () => {
       for (let k = 0; k < E * E; k++) {
         const m = downstream(r, k);
         if (m < 0) continue;
-        // Level only on a lake.
-        if (isLake(r, k) && isLake(r, m)) expect(r.level[m]).toBeLessThanOrEqual(r.level[k]);
-        else expect(r.level[m], `${world} node ${k}`).toBeLessThan(r.level[k]);
+        // Level across a filled hollow (a lake, or one too shallow to show as one); downhill everywhere else.
+        expect(r.level[m], `${world} node ${k}`).toBeLessThanOrEqual(r.level[k]);
         if (!r.kind[k]) continue;
         channels++;
         if (r.kind[k] === Channel.River) rivers++;
@@ -167,8 +166,9 @@ describe('rivers in the tiles', () => {
     }
   }, 60_000);
 
-  it('put regions around the origin, 2,048 tiles across', () => {
+  it('put regions around the origin, 3,072 tiles across', () => {
     expect(REGION_TILES).toBe(REGION_NODES * NODE);
+    expect(REGION_TILES).toBe(3072);
     expect(regionOf(0)).toBe(0);
     expect(regionOf(REGION_TILES / 2 - 1)).toBe(0);
     expect(regionOf(REGION_TILES / 2)).toBe(1);

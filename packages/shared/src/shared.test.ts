@@ -6,7 +6,7 @@ import {
 } from './index.ts';
 
 /** terrainHash(worldSeed('golden')). Also in tests/e2e/multiplayer.spec.ts, which checks browsers get it too. */
-const GOLDEN_HASH = 4064590671;
+const GOLDEN_HASH = 1210380991;
 
 describe('worldgen', () => {
   const seed = worldSeed('test');

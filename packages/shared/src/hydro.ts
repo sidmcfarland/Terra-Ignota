@@ -26,8 +26,12 @@ import { groundAt, macroAt, newGround, type Ground } from './terrain.ts';
 
 /** Tiles between drainage nodes. */
 export const NODE = 32;
-/** Nodes along a region's edge. */
-export const REGION_NODES = 64;
+/**
+ * Nodes along a region's edge: 3,072 tiles. Measured, then picked (docs/PLAN.md, "Natural terrain"): the
+ * window a region works in is 187 nodes wider than the region whatever its size, so small regions cost
+ * nearly as much as large ones; this is the largest that computes within a quarter of a second on the dev machine.
+ */
+export const REGION_NODES = 96;
 export const REGION_TILES = NODE * REGION_NODES;
 
 /** Nodes kept around a region's own, so any tile in the region finds every node that can affect it. */
@@ -46,15 +50,17 @@ const MARGIN = REACH + BREACH + 10 * FLOOD + 2;
 export const REGION_EDGE = REGION_NODES + 2 * HALO + 1;
 const EDGE = REGION_EDGE;
 
+/** A hollow shallower than this fills, so water crosses it, without showing as a lake. */
+const LAKE_MIN = 0.03;
 /** How deep the lake at the lowest point of a basin too wide to flood is. */
 const SINK = 0.04;
 /** How deep the pond is where water collects with no way out. */
 const POND = 0.05;
 /** A lake's water stops this far below the land at the nodes around it. */
 const SHORE = 0.02;
-/** Rain gathered (1 to 3 per node, by climate) that makes a stream, and a river. Both at most REACH + 1, see `kinds`. */
+/** Rain gathered (1 or 2 per node, by climate) that makes a stream, and a river. Both at most REACH + 1, see `kinds`. */
 const STREAM_RAIN = 18;
-const RIVER_RAIN = 110;
+const RIVER_RAIN = 90;
 
 /** How far a node's river point may sit from the node. */
 const JITTER = 0.35 * NODE;
@@ -125,7 +131,7 @@ export function computeRegion(seed: number, rx: number, ry: number, extra = 0): 
       z[k] = g.u;
       inland[k] = g.inland;
       if (g.inland < 0) sea[k] = 1;
-      else wet[k] = 1 + (g.rain > -0.2 ? 1 : 0) + (g.rain > 0.25 ? 1 : 0);
+      else wet[k] = g.rain > 0 ? 2 : 1;
     }
   }
 
@@ -150,7 +156,7 @@ export function computeRegion(seed: number, rx: number, ry: number, extra = 0): 
       if (!pit) continue;
 
       const id = ++floods;
-      let size = 0, count = 0, top = -Infinity, rose = 0, draining = false;
+      let size = 0, count = 0, top = -Infinity, rose = 0, draining = false, shows = true;
       stamp[p] = id;
       heap[size++] = p;
       while (size > 0) {
@@ -197,11 +203,11 @@ export function computeRegion(seed: number, rx: number, ry: number, extra = 0): 
         top = z[p] + SINK;
         rose = 0;
         while (rose < count && z[covered[rose]] <= top) rose++;
-      }
+      } else shows = top - z[p] >= LAKE_MIN;
       for (let t = 0; t < rose; t++) {
         const m = covered[t];
         if (top > level[m]) level[m] = top;
-        lake[m] = 1;
+        if (shows) lake[m] = 1;
       }
     }
   }
@@ -360,15 +366,15 @@ function kinds(rain: number, long: boolean): number {
 
 /** Half a channel's width in tiles. */
 function halfWidth(kind: number, rain: number): number {
-  if (kind === Channel.Stream) return rain < 50 ? 0.85 : 1.25;
-  return rain < 220 ? 1.7 : rain < 500 ? 2.3 : WIDEST;
+  if (kind === Channel.Stream) return rain < 45 ? 0.85 : 1.25;
+  return rain < 180 ? 1.7 : rain < 400 ? 2.3 : WIDEST;
 }
 
 // ---- Regions, cached. Computing one takes a fraction of a second, so the client asks a worker for
 // the regions around the player ahead of time and installs them here; anything not installed is
 // computed on the spot.
 
-const MAX_REGIONS = 16;
+let maxRegions = 16;
 const regions = new Map<string, Region>();
 let lastRegion: Region | null = null;
 
@@ -380,12 +386,17 @@ export function hasRegion(seed: number, rx: number, ry: number): boolean {
 
 export function installRegion(r: Region): void {
   const key = `${r.seed},${r.rx},${r.ry}`;
-  if (!regions.has(key) && regions.size >= MAX_REGIONS) {
+  if (!regions.has(key) && regions.size >= maxRegions) {
     const oldest = regions.keys().next().value!;
     if (regions.get(oldest) === lastRegion) lastRegion = null;
     regions.delete(oldest);
   }
   regions.set(key, r);
+}
+
+/** How many regions to hold at most (16 unless set): a map of a wide area needs more than a player does. */
+export function setRegionCacheSize(count: number): void {
+  maxRegions = Math.max(4, count);
 }
 
 export function getRegion(seed: number, rx: number, ry: number): Region {
@@ -491,6 +502,21 @@ function gatherPieces(r: Region, i0: number, j0: number) {
         piece(px, py, qx, qy, pl, ql, ph, qh, ford && (q === 2 || q === 3) ? Channel.Stream : q <= 2 ? kind : next);
         px = qx; py = qy; pl = ql; ph = qh;
       }
+    }
+  }
+}
+
+/** Each span of channel that starts at one of a region's own nodes, as a straight line between river points: for drawing maps. */
+export function channelSpans(r: Region, each: (ax: number, ay: number, bx: number, by: number, kind: number) => void): void {
+  for (let j = HALO; j < EDGE - HALO - 1; j++) {
+    for (let i = HALO; i < EDGE - HALO - 1; i++) {
+      const k = j * EDGE + i, d = r.flow[k];
+      if (!r.kind[k] || d < 0) continue;
+      const gx = r.x0 + i, gy = r.y0 + j, hx = gx + DX[d], hy = gy + DY[d];
+      each(
+        gx * NODE + JITTER * nudge(r.seed, gx, gy, 0x3a71), gy * NODE + JITTER * nudge(r.seed, gx, gy, 0x51c9),
+        hx * NODE + JITTER * nudge(r.seed, hx, hy, 0x3a71), hy * NODE + JITTER * nudge(r.seed, hx, hy, 0x51c9), r.kind[k],
+      );
     }
   }
 }

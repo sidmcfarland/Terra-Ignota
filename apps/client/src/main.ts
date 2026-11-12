@@ -1,17 +1,20 @@
 import './style.css';
 import {
-  Tile, TileCache, TileEdits, findSpawn, isWalkable, nextZone, signOp, step, worldSeed, zoneName, zoneOf,
+  Tile, TileCache, TileEdits, ZONE_TILES, findSpawn, isWalkable, nextZone, signOp, step, worldSeed, zoneName, zoneOf,
   type PlayerInfo, type TileOp,
 } from '@terra/shared';
 import { inviteSpot, inviteUrl, loadConfig } from './config.ts';
 import { DebugPanel } from './debug.ts';
 import { HostingProfile } from './net/hosting.ts';
 import { Input } from './input.ts';
+import { RegionLoader } from './regions.ts';
 import { Session } from './net/session.ts';
 import { Store } from './net/store.ts';
 import { GameView, type Player } from './render/view.ts';
 
 const MIN_ZOOM = 8, MAX_ZOOM = 48;
+/** Drainage regions within this many tiles of the player are computed ahead: well past what the view shows. */
+const REGION_AHEAD = 640;
 
 async function main() {
   const cfg = loadConfig();
@@ -32,6 +35,11 @@ async function main() {
   const edits = new TileEdits();
   for (const op of await store.loadOps(cfg.world)) edits.merge(op);
   const tiles = new TileCache(worldSeed(cfg.world), 1024, edits);
+  // Rivers and lakes are simulated a region at a time. A worker gets the regions near the player ready
+  // ahead of need (first the ones the game starts in); one that isn't ready is computed on the spot.
+  const regions = new RegionLoader(tiles.seed);
+  const start = inviteSpot() ?? { x: ZONE_TILES / 2, y: ZONE_TILES / 2 };
+  await regions.around(start.x, start.y, REGION_AHEAD);
   const view = new GameView(tiles);
   document.getElementById('game')!.appendChild(view.canvas);
 
@@ -48,6 +56,8 @@ async function main() {
       break;
     }
   }
+
+  setInterval(() => void regions.around(self.x, self.y, REGION_AHEAD), 1000);
 
   const info: PlayerInfo = { id: cfg.peerId, name: cfg.name, hue: cfg.hue };
   const input = new Input(view.canvas);
