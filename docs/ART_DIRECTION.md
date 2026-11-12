@@ -151,9 +151,10 @@ The colours of the light change through the day. They are in "Time of day" below
 **Chosen in visual-foundation milestone 4 (2026-11-12); awaiting Sid's approval.** The code is `apps/client/src/render/wind.ts` (direction and strength from the clock) and `windAt` in `look.ts` (the field every shader samples).
 
 - **One wind for everything.** A direction, a strength from 0 to 1, and gusts that roll downwind across the land in broad, wandering bands about 30 tiles apart. Grass, flowers, reeds, bushes, trees and water all sample the same field, so a gust is seen crossing a meadow, reaching the trees and then ruffling the lake.
-- **Supple things bend, stiff things rock.** A blade of grass leans downwind by up to its own height in a gale and flutters out of step with its neighbours. A tree's crown leans only a little and rocks slowly, each tree in its own time. Stones do not move.
+- **Supple things bend, stiff things rock.** A blade of grass leans downwind by up to about its own height in a gale and quivers out of step with its neighbours. The quiver is the same small amount whatever the plant's height, so a tall reed does not thrash. A tree's crown leans only a little and rocks slowly. Stones do not move.
+- **A wood moves as one.** The rocking of trees is a wave that travels downwind, about 21 tiles long, and each tree is only a little out of step with it. Trees each rocking in their own time made a forest shimmer.
 - **Bent grass is paler.** A gust lightens the blades it bends by a few percent, so wind shows as bands of sheen crossing a meadow even when the blades are too small to see move.
-- **Leaves turn.** The facets of a crown catch the light in turn as the wind passes, by tilting their normals. No geometry moves for this.
+- **A facet's brightness changes only as the thing itself moves.** When a crown leans, its facets tilt with it, by the same amount and at the same moment, and the light on them follows. Nothing else may change a facet's brightness. (Milestone 4 tilted every facet's normal on a faster clock of its own, to suggest leaves turning. Sid saw it as crowns flashing "like Christmas lights", and it was removed in milestone 8: see "Flicker" under Measured performance.)
 - **Water answers too.** Ripples grow with the wind, and a gust darkens the surface as it passes (a cat's paw).
 - **Fair weather is never still and never rough.** On its own the wind wanders between 0.12 and 0.7 over minutes, from the south-west and swinging about 50° either way. Weather (milestone 5) will push it harder.
 - **It follows the wall clock, not the network,** like the time of day. Every explorer feels the same breeze.
@@ -402,6 +403,29 @@ The order is by how much each step decides the look of everything after it. Each
 - **Cliffs were steep slopes, not vertical faces.** Fixed in milestone 8: see "Cliffs are sheer" above.
 - **Streams and rivers have colours but have not been seen.** Nothing generates them until M4c step 2, so their look is untested.
 
+### Flicker: how motion is measured
+Nobody had watched the wind move before Sid did, and he found tree crowns flashing. Motion is now measured, not judged from stills.
+
+**The method.** Hold the hour, season, weather and wind still. Replace the page's clock with one that steps a thirtieth of a second a frame, draw 240 frames (8 seconds), and read the canvas after each. Find the pixels a kind of mesh covers by drawing one frame with it hidden. For each of those pixels, record how far its brightness swings (highest minus lowest, over its mean) and how often it crosses its mean (the rate). To tell a change in lighting from a change caused by movement, repeat with the sway switched off in the live shader, and again with the lighting change switched off. The harness is in the shared notes folder as `flicker-harness.js`.
+
+**What it found** (conifer forest at `#w=vista&at=144,48`, wind 0.6, 28 pixels a tile, 13,500 tree pixels):
+
+| Tree pixels | Before | After |
+|---|---|---|
+| Brightness swing with the sway switched off, typical pixel | 5.3% | 1.3% |
+| The same, the liveliest tenth of pixels | 34% or more | 3.3% or more |
+| Share of pixels swinging more than 20%, sway off | 23% | 1.3% |
+| Rate of that change | 0.81 times a second | 0.13 to 0.31 |
+| Rate of the sway itself | 0.19 to 0.38 | 0.25 to 0.44 |
+| Swing as shipped (light and movement together), typical pixel | 19% | 3.2% |
+| Largest change between two frames, typical pixel | 5.4% | 1.8% |
+
+- **The cause:** each facet's normal was tilted by its own sine wave, three to four times faster than the tree swayed and out of step with every other facet. The sway never touched the lighting at all, so colour changed with no relation to movement.
+- **Ruled out:** normals are not rebuilt from moved positions (they are fixed per facet), and the wind's sheen is on grass only and is slow (it moved a typical grass pixel 1.8%, about once every four seconds).
+- **What still changes:** with light and movement together, three pixels in ten still swing more than 20%. Those are pixels on the edge of a crown or between two of its facets, which a moving tree passes back and forth across. That is the movement itself, at the sway's own rate.
+- **Reeds thrashed.** Their quiver grew with their height, so a reed flicked four times as far as grass. Rate of change for a reed pixel went from 0.81 to 0.44 times a second, and its largest frame-to-frame change from 15% to 10%.
+- **Grass and water were sound.** Grass changes with its own movement (typical pixel 13%, 0.44 times a second after the change). Lake and sea water change slowly: 6 to 11% for a typical pixel, about once every five seconds.
+
 ### Measured performance
 On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
 
@@ -474,21 +498,21 @@ World `vista`, on the M4c terrain. Add `&time=afternoon&season=summer&weather=cl
 The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show different land now. Zoom out fully to see the diorama on its map.
 
 ### Waiting for Sid
-1. **The refined palette** (above): sage and olive greens, warm stone, teal water. Approve or steer.
+1. ~~The refined palette.~~ **Approved** (2026-11-12, with the overall daytime look).
 2. **Facets that blend across tile edges, and corners nudged off the grid.** Tiles are no longer visible as squares, except what players build. A wall's edge can sit up to 0.16 of a tile from where collision puts it.
-3. **The known world as a circle on parchment**, with the flat-wash, paper-relief, colour sequence at its edge and a faint graticule on the blank map.
+3. ~~The known world as a circle on parchment, with its edge and fade.~~ **Approved** (2026-11-12).
 4. ~~Late-afternoon light from the west as the default.~~ Replaced by the day/night cycle (items 10 to 13).
 5. **HUD recoloured** to parchment and ink. It's a recolour only; real UI design is out of scope here.
 6. **The woodland:** two species placed by altitude, about two forest tiles in three holding a tree, lone trees in open grass.
 7. **Ground cover that is deliberately quiet:** grass coloured from its own ground, flowers in single-kind colonies, no red flowers.
 8. **The playing-piece avatar** with its soft shadow, as the placeholder until characters are designed.
 9. **Reed beds on every shallow shore**, sea included (see the finding above).
-10. **A 48-minute day read from the wall clock**, the same for every explorer, with nothing sent over the network. Is 48 minutes the right length?
-11. **Uneven hours:** the day lingers at dawn and through the golden hour and sunset, and hurries through noon and the night (about 10 of the 48 minutes are night).
-12. **Night is moonlit, blue-green and readable, never dark,** and the parchment itself dims to slate.
-13. **Every explorer carries a lantern** after sundown: a warm pool of light, which also makes other explorers visible from afar.
-14. **A wind that is never still and never rough in fair weather** (0.12 to 0.7), read from the wall clock, with gusts that cross grass, trees and water in turn.
-15. **Tree crowns thin to a scatter of pixels where they would hide your explorer.**
+10. ~~A 48-minute day read from the wall clock.~~ **Approved** (2026-11-12).
+11. ~~Uneven hours.~~ **Approved** (2026-11-12).
+12. ~~Night is moonlit, blue-green and readable, never dark.~~ **Approved** (2026-11-12).
+13. ~~Every explorer carries a lantern.~~ **Approved** (2026-11-12).
+14. ~~A wind that is never still and never rough in fair weather.~~ **Approved** (2026-11-12), apart from the flashing crowns, which were a defect and are fixed.
+15. ~~Tree crowns thin where they would hide your explorer.~~ **Approved** (2026-11-12).
 16. **Weather from the wall clock, mostly fair:** cloudy about a quarter of the time, rain about a seventh, storms rare, mist about a tenth. Are those the right odds?
 17. **A 16-hour year** (4 real hours a season), so the season is different at the same time on different days. This means the game can open in winter. Is that the right length, and should a new player's first visit be held to summer?
 18. **Autumn in ochre and russet, with no red,** and each tree turning in its own time.
@@ -496,8 +520,8 @@ The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show diff
 20. **Storms are distant lightning only:** no bolts, nothing strikes.
 21. **Mist lies in the low ground and leaves the hilltops clear,** instead of veiling the whole picture.
 22. **Light shafts as cloud shadows and beams in the mist,** not volumes in the air.
-23. **Fireflies on warm still nights only,** small and yellow-green.
-24. **Stars shown in the water,** since this camera never sees the sky.
+23. ~~Fireflies on warm still nights only.~~ **Approved** (2026-11-12).
+24. ~~Stars shown in the water.~~ **Approved** (2026-11-12).
 25. **Heat as a waver in the light,** keeping the renderer at no full-screen passes. This is the effect I am least sure reads as intended: judge it in motion with `#season=summer&time=12.5&wind=0.1&weather=clear`.
 26. **Leaves fall everywhere in autumn,** not only near trees.
 27. **Lake water greener, darker and stiller than the sea,** with reeds on lake shores only.

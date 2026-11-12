@@ -450,11 +450,15 @@ void main() {
   vec2 wind = windAt(root.xz);
   vec3 downwind = vec3(uWind.x, 0.0, uWind.y);
 #ifdef USE_INSTANCING
-  // A tree is stiff: its crown leans a little and rocks slowly, each tree in its own time,
-  // and its leaves turn in the wind, so the facets of a crown catch the light in turn.
+  // A tree is stiff: its crown leans a little and rocks slowly. Neighbours rock nearly together, because
+  // the rocking is a wave that travels downwind and each tree is only a little out of step with it. A
+  // wood then moves as one, not as a crowd of trees each in its own time.
   float tall = local.y - origin.y;
-  float bend = tall * tall * 0.05 * wind.x * (1.0 + 0.5 * sin(uWind.w * 2.1 + h * 6.2832));
-  n = normalize(n + downwind * (0.55 * wind.x * sin(uWind.w * 6.0 + h * 40.0 + dot(normal, vec3(5.0, 9.0, 7.0)))));
+  float bend = tall * tall * 0.05 * wind.x * (1.0 + 0.5 * sin(uWind.w * 2.1 - dot(root.xz, uWind.xy) * 0.3 + h * 1.5));
+  // The light on a crown changes only as the crown itself moves: leaning the tree tilts its facets
+  // with it (the normal of a sheared surface), by the same amount and at the same moment. Nothing
+  // else may change a facet's brightness, or the crown flickers.
+  n = normalize(n - vec3(0.0, dot(n, downwind) * 2.0 * bend / max(tall, 0.05), 0.0));
   // Crowns standing between the explorer and the eye thin out, so you can see yourself among the trunks.
   vec2 toEye = normalize(uViewDir.xz);
   vec2 rel = root.xz - uFocus - toEye * 1.7;
@@ -477,8 +481,10 @@ void main() {
 #else
   albedo = snowOn(seasonOn(albedo), root.xyz, n.y);
   // Grass and leaves are supple: the tip goes with every gust, and bent grass shows its paler side.
+  // The lean grows with height, a little less for tall things, which are stiffer. The flutter does not
+  // grow with height: a reed four times as tall as a grass blade quivers by the same small amount.
   float tall = aColor.a * ${lift.toFixed(2)};
-  float bend = tall * wind.x * (1.0 + 0.35 * wind.y);
+  float bend = wind.x * (tall * (1.0 - 0.35 * min(tall, 1.0)) + 0.07 * wind.y * min(tall * 4.0, 1.0));
   albedo *= 1.0 + 0.3 * (wind.x - 0.3 * uWind.z) * min(tall * 4.0, 1.0);
   vFade = 1.0;
 #endif
