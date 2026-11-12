@@ -1,7 +1,7 @@
 import {
-  EDITS_PER_SEC, EDIT_REACH, PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ, ZONE_CHUNKS,
-  canHost, chunkKey, hostScore, isWalkable, isWellFormed, parseZone, verifyOp,
-  type FromSignal, type HostMetrics, type Identity, type PlayerInfo, type Reliable, type TileEdits, type TileLookup,
+  EDITS_PER_SEC, EDIT_REACH, PLAYER_SPEED, PROTOCOL_VERSION, STATUS_INTERVAL_MS, TICK_HZ,
+  canHost, hostScore, isWalkable, isWellFormed, verifyOp, zoneChunkKeys,
+  type FromSignal, type HostMetrics, type Identity, type LinkKind, type PlayerInfo, type Reliable, type TileEdits, type TileLookup,
   type TileOp, type Unreliable, type ZoneId,
 } from '@terra/shared';
 import { BorderLinks, type BorderDebug, type LocalPlayer } from './border.ts';
@@ -155,8 +155,10 @@ export class Session {
   /** Players from neighbouring zones, relayed by their hosts (ids into remotes). */
   private foreign = new Set<string>();
   private rosterDirty = false;
+  /** Seed peers replicating this zone's edits, by peer id. */
+  private seedLinks = new Map<string, Peer>();
   /** After taking over: where each player was in the old host's last state, to validate their reconnect. */
-  private seed: BackupState | null = null;
+  private inherited: BackupState | null = null;
   private tick = 0;
   private lastTickT = 0;
   private late: boolean[] = [];
@@ -259,10 +261,11 @@ export class Session {
     this.remotes.clear();
     this.foreign.clear();
     this.borders.close();
+    this.closeSeeds();
     this.snapT = 0;
     this.backups = [];
     this.backupState = null;
-    this.seed = null;
+    this.inherited = null;
     hostPeer?.close();
     for (const c of clients) c.peer.close();
   }
@@ -281,12 +284,7 @@ export class Session {
 
   /** The chunk keys of the zone this session is in. */
   private zoneChunks(): string[] {
-    const [zx, zy] = parseZone(this.zone);
-    const keys: string[] = [];
-    for (let cy = 0; cy < ZONE_CHUNKS; cy++) {
-      for (let cx = 0; cx < ZONE_CHUNKS; cx++) keys.push(chunkKey(zx * ZONE_CHUNKS + cx, zy * ZONE_CHUNKS + cy));
-    }
-    return keys;
+    return zoneChunkKeys(this.zone);
   }
 
   private chunkOps(keys: string[]): TileOp[] {
@@ -305,11 +303,12 @@ export class Session {
     return changed;
   }
 
-  /** Host: send ops to every client (except the one they came from) and to neighbouring hosts. */
+  /** Host: send ops to every client and seed (except the one they came from) and to neighbouring hosts. */
   private spread(ops: TileOp[], except: string | null) {
     for (let i = 0; i < ops.length; i += OPS_PER_MESSAGE) {
       const msg: Reliable = { t: 'edits', ops: ops.slice(i, i + OPS_PER_MESSAGE) };
       for (const [id, c] of this.clients) if (c.info && id !== except) c.peer.sendR(msg);
+      for (const [id, peer] of this.seedLinks) if (id !== except) peer.sendR(msg);
     }
     this.borders.sendOps(ops);
   }
@@ -329,10 +328,15 @@ export class Session {
     await this.receiveOps([op], id);
   }
 
-  /** Host: a client's digests. Send it what it lacks; ask for what we lack. */
+  /** Host: a client's digests. */
   private hostOnSync(id: string, d: unknown) {
     const c = this.clients.get(id);
-    if (!c || !d || typeof d !== 'object') return;
+    if (c) this.syncWith(c.peer, d);
+  }
+
+  /** Host: compare a peer's digests with ours. Send it what it lacks; ask for what we lack. */
+  private syncWith(peer: Peer, d: unknown) {
+    if (!d || typeof d !== 'object') return;
     const theirs = d as Record<string, unknown>;
     const send: string[] = [], want: string[] = [];
     for (const key of this.zoneChunks()) {
@@ -342,8 +346,31 @@ export class Session {
       if (ours) send.push(key);
       if (them) want.push(key);
     }
-    this.sendOps(c.peer, this.chunkOps(send));
-    if (want.length) c.peer.sendR({ t: 'syncWant', chunks: want });
+    this.sendOps(peer, this.chunkOps(send));
+    if (want.length) peer.sendR({ t: 'syncWant', chunks: want });
+  }
+
+  /** Host: a seed peer is dialling in. It's a replica of the zone's edits, not a player. */
+  private acceptSeed(id: string) {
+    this.seedLinks.get(id)?.close();
+    const peer: Peer = new Peer(id, false, this.o.iceServers, this.sendSignal(id, 'seed'), {
+      onOpen: () => {},
+      onClose: () => {
+        if (this.seedLinks.get(id) === peer) this.seedLinks.delete(id);
+      },
+      onReliable: (m) => {
+        if (m.t === 'sync') this.syncWith(peer, m.d);
+        else if (m.t === 'edits') void this.receiveOps(m.ops, id);
+      },
+      onUnreliable: () => {},
+    });
+    this.seedLinks.set(id, peer);
+  }
+
+  private closeSeeds() {
+    const links = [...this.seedLinks.values()];
+    this.seedLinks.clear();
+    for (const peer of links) peer.close();
   }
 
   /** Client: right after connecting, tell the host what we hold for this zone. */
@@ -375,6 +402,12 @@ export class Session {
           if (this.role === 'host') this.borders.handleSignal(m.from, m.data);
           break;
         }
+        if (m.link === 'seed') {
+          if (this.role !== 'host') break;
+          if (m.data.kind === 'offer') this.acceptSeed(m.from);
+          void this.seedLinks.get(m.from)?.handleSignal(m.data);
+          break;
+        }
         if (this.role === 'host') {
           if (m.data.kind === 'offer') this.acceptClient(m.from);
           this.clients.get(m.from)?.peer.handleSignal(m.data);
@@ -402,8 +435,8 @@ export class Session {
     }
   }
 
-  private sendSignal(to: string) {
-    return (data: Parameters<Peer['handleSignal']>[0]) => this.signal.send({ t: 'signal', to, link: 'zone', data });
+  private sendSignal(to: string, link: LinkKind = 'zone') {
+    return (data: Parameters<Peer['handleSignal']>[0]) => this.signal.send({ t: 'signal', to, link, data });
   }
 
   // ---------------- host role ----------------
@@ -424,8 +457,8 @@ export class Session {
     // A backup taking over carries on from the old host's state.
     const st = this.backupState;
     this.backupState = null;
-    this.seed = st && performance.now() - st.t < STATE_MAX_AGE_MS ? st : null;
-    if (this.seed) this.tick = this.seed.tick;
+    this.inherited = st && performance.now() - st.t < STATE_MAX_AGE_MS ? st : null;
+    if (this.inherited) this.tick = this.inherited.tick;
   }
 
   private acceptClient(id: string) {
@@ -459,16 +492,16 @@ export class Session {
       c.y = Number(m.y) || 0;
       c.lastT = performance.now();
       // Reconnecting after a takeover: hold the claimed position to what the old host last validated.
-      const known = this.seed?.players.get(id);
-      if (known && this.seed) {
-        const maxD = PLAYER_SPEED * ((c.lastT - this.seed.t) / 1000 + 0.25) * 1.5;
+      const known = this.inherited?.players.get(id);
+      if (known && this.inherited) {
+        const maxD = PLAYER_SPEED * ((c.lastT - this.inherited.t) / 1000 + 0.25) * 1.5;
         const dx = c.x - known.x, dy = c.y - known.y, d = Math.hypot(dx, dy);
         if (d > maxD) {
           c.x = known.x + (dx * maxD) / d;
           c.y = known.y + (dy * maxD) / d;
           c.corrections++;
         }
-        this.seed.players.delete(id);
+        this.inherited.players.delete(id);
       }
       this.foreign.delete(id); // Now hosted here; no longer relayed by a neighbour.
       this.remotes.set(id, { info: c.info, samples: [{ t: c.lastT, x: c.x, y: c.y }] });
@@ -554,6 +587,7 @@ export class Session {
       this.clients.clear();
       this.foreign.clear();
       this.borders.close();
+      this.closeSeeds();
     }
     if (this.hostPeer?.remoteId === hostId && !this.hostPeer.isOpen) return; // already dialing
     this.hostPeer?.close();
@@ -708,6 +742,11 @@ export class Session {
   }
 
   /** Links to neighbouring zones' hosts, when this peer is a host. */
+  /** Seed peers linked to this host (open links only). */
+  get seedCount(): number {
+    return this.role === 'host' ? [...this.seedLinks.values()].filter((p) => p.isOpen).length : 0;
+  }
+
   bordersDebug(): BorderDebug[] {
     return this.role === 'host' ? this.borders.debug() : [];
   }
@@ -767,6 +806,7 @@ export class Session {
     this.hostPeer?.close();
     for (const c of this.clients.values()) c.peer.close();
     this.borders.close();
+    this.closeSeeds();
   }
 }
 

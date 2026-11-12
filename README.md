@@ -32,6 +32,7 @@ npm run e2e            # real browsers connecting over WebRTC
 packages/shared   worldgen, movement, protocol (runs in browser and Node)
 apps/client       PWA (Vite + Three.js)
 apps/signal       signaling + zone directory server
+apps/seed         always-on seed peer: keeps world edits on disk
 ```
 
 ## Deploy

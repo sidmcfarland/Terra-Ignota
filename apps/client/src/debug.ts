@@ -136,7 +136,7 @@ function netLines({ session, peerId, name, seed }: DebugState): string[] {
   if (session.role === 'host') {
     const backups = session.backupsDebug();
     lines.push(
-      `TICK   #${session.currentTick}`,
+      `TICK   #${session.currentTick}  ·  seeds ${session.seedCount}`,
       `BACKUPS ${backups.length ? backups.map((b, i) => `#${i + 1} ${b.name ?? short(b.id)}${b.streaming ? '' : ' (not connected)'}`).join('  ·  ') : 'none (alone in the zone)'}`,
     );
     const clients = session.clientsDebug();

@@ -5,7 +5,7 @@
  * so replicas converge without consensus. Terrain itself is never sent: an edit
  * only overrides the generated tile at one spot.
  */
-import { CHUNK } from './constants.ts';
+import { CHUNK, ZONE_CHUNKS } from './constants.ts';
 import { hashString } from './rng.ts';
 import { Tile } from './worldgen.ts';
 
@@ -57,6 +57,17 @@ export function isWellFormed(op: unknown): op is TileOp {
 export type ChunkKey = string;
 export const chunkKey = (cx: number, cy: number): ChunkKey => `${cx},${cy}`;
 export const chunkKeyOf = (x: number, y: number): ChunkKey => chunkKey(Math.floor(x / CHUNK), Math.floor(y / CHUNK));
+
+/** The keys of the chunks that make up a zone ("zx,zy"). */
+export function zoneChunkKeys(zone: string): ChunkKey[] {
+  const [zx, zy] = zone.split(',').map(Number);
+  const keys: ChunkKey[] = [];
+  for (let cy = 0; cy < ZONE_CHUNKS; cy++) {
+    for (let cx = 0; cx < ZONE_CHUNKS; cx++) keys.push(chunkKey(zx * ZONE_CHUNKS + cx, zy * ZONE_CHUNKS + cy));
+  }
+  return keys;
+}
+
 const tileIndex = (x: number, y: number) => {
   const lx = x - Math.floor(x / CHUNK) * CHUNK, ly = y - Math.floor(y / CHUNK) * CHUNK;
   return ly * CHUNK + lx;
@@ -92,6 +103,10 @@ export class TileEdits {
 
   nextClock(): number {
     return ++this.clock;
+  }
+
+  chunkKeys(): ChunkKey[] {
+    return [...this.chunks.keys()];
   }
 
   hasChunk(key: ChunkKey): boolean {

@@ -2,18 +2,28 @@ import type { TileOp } from './edits.ts';
 import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 
 /**
- * What a relayed WebRTC signal sets up: a client's link to its zone host, or a
- * border link between the hosts of two neighbouring zones.
+ * What a relayed WebRTC signal sets up: a client's link to its zone host, a
+ * border link between the hosts of two neighbouring zones, or a seed peer's
+ * link to a zone host.
  */
-export type LinkKind = 'zone' | 'border';
+export type LinkKind = 'zone' | 'border' | 'seed';
+
+/** A zone and its current host, in some world. */
+export interface ZoneHost {
+  world: string;
+  zone: ZoneId;
+  hostId: string;
+}
 
 export type ToSignal =
   | { t: 'join'; v: number; world: string; zone: ZoneId; peerId: string }
+  /** Register as a seed peer: an always-on replica that joins every zone host. */
+  | { t: 'seed'; v: number; peerId: string }
   | { t: 'signal'; to: string; link: LinkKind; data: SignalData }
   /** Heartbeat with what the directory needs to elect hosts. Sent every STATUS_INTERVAL_MS and on changes. */
   | { t: 'status'; m: HostMetrics }
@@ -38,6 +48,10 @@ export type FromSignal =
   /** Sent to a zone host when a member's socket closes. */
   | { t: 'left'; peerId: string }
   | { t: 'pong'; n: number }
+  /** To a seed after it registers: every zone that has a host. */
+  | { t: 'zones'; hosts: ZoneHost[] }
+  /** To seeds: a zone's host changed, or the zone emptied (hostId null). */
+  | { t: 'zoneHost'; world: string; zone: ZoneId; hostId: string | null }
   /** Liveness probe, answered from page script (unlike a WebSocket ping, which a hung page still answers). */
   | { t: 'probe'; n: number }
   | { t: 'error'; message: string };

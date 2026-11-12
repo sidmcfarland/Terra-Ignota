@@ -8,14 +8,16 @@ npm install
 npm run dev        # signal server :8787 + Vite client :5173
 npm run typecheck  # one root tsconfig covers every workspace
 npm test           # vitest unit tests (packages/**, apps/**/*.test.ts)
-npm run e2e        # Playwright: builds the client, starts signal + preview, real WebRTC between pages
+npm run e2e        # Playwright: builds the client, starts signal + preview + seed, real WebRTC between pages
+npm run dev:seed   # optional: a local seed peer (:8788) that keeps edits in ./data
 ```
 Before pushing, run typecheck, test and e2e.
 
 ## Layout
-- `packages/shared`: worldgen, movement, zones, protocol, tile cache. It must stay **isomorphic**, with no DOM or Node-only APIs, because it runs in the browser, the signal server and the future seed peer.
+- `packages/shared`: worldgen, movement, zones, protocol, tile cache. It must stay **isomorphic**, with no DOM or Node-only APIs, because it runs in the browser, the signal server and the seed peer.
 - `apps/client`: Vite + Three.js PWA. `net/` holds the signaling client, WebRTC peer and zone session; `render/` holds the 3D terrain/view and the 2D atlas painter.
 - `apps/signal`: WebSocket signaling + zone directory. It never relays gameplay.
+- `apps/seed`: headless always-on peer. It dials every zone host over WebRTC (node-datachannel's polyfill, reusing the client's `Peer`) and keeps edits on disk.
 
 ## Conventions and gotchas
 - **Node runs the `.ts` files directly** (type stripping, Node ≥ 22.18), with no build step. `erasableSyntaxOnly` is on, so don't use enums, namespaces or constructor parameter properties. Use `as const` objects and explicit fields. Imports use `.ts` extensions.

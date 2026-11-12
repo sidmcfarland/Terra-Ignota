@@ -311,13 +311,19 @@ const PATH = 8, WALL = 9; // Mirrors Tile.Path / Tile.Wall in packages/shared/sr
 const editAt = (p: Page, x: number, y: number) =>
   p.evaluate(([x, y]) => (window as any).__ti.edits.get(x, y)?.tile ?? null, [x, y] as const);
 
-/** Paint a tile right next to the page's player, within reach. Returns its coordinates. */
+/**
+ * Paint a tile near the page's player, within reach, that nobody has edited yet
+ * (players spawn close together, so a fixed offset could land on another
+ * player's edit). Tries dx tiles across first. Returns its coordinates.
+ */
 async function paintNext(p: Page, dx: number, tile: number | null): Promise<[number, number]> {
   return p.evaluate(async ([dx, tile]) => {
     const ti = (window as any).__ti;
-    const x = Math.floor(ti.self.x) + dx, y = Math.floor(ti.self.y);
-    await ti.paint(x, y, tile);
-    return [x, y] as [number, number];
+    const px = Math.floor(ti.self.x), py = Math.floor(ti.self.y);
+    const offsets = [[dx, 0], [dx, 1], [dx, -1], [-dx, 0], [-dx, 1], [-dx, -1], [0, 2], [0, -2], [1, 2], [-1, -2]];
+    const [ox, oy] = offsets.find(([ox, oy]) => !ti.edits.get(px + ox, py + oy))!;
+    await ti.paint(px + ox, py + oy, tile);
+    return [px + ox, py + oy] as [number, number];
   }, [dx, tile] as const);
 }
 
@@ -336,13 +342,17 @@ test('edits replicate through the host and survive a reload', async ({ browser }
   // The edited tile is what movement and the host's checks see.
   expect(await a.evaluate(([x, y]) => (window as any).__ti.tiles.get(x, y), [ax, ay] as const)).toBe(WALL);
 
-  // The B key paints the tile in front of the player (facing south before moving).
+  // The B key cycles the tile in front of the player (facing south before moving):
+  // unedited -> path -> wall -> unedited. It may be a tile already painted above.
   const front = await b.evaluate(() => {
     const ti = (window as any).__ti;
     return [Math.floor(ti.self.x), Math.floor(ti.self.y + 1)] as [number, number];
   });
+  const before = await editAt(b, front[0], front[1]);
+  const expected = before === null ? PATH : before === PATH ? WALL : null;
   await b.keyboard.press('b');
-  await expect.poll(() => editAt(a, front[0], front[1]), { timeout: 10_000 }).toBe(PATH);
+  await expect.poll(() => editAt(b, front[0], front[1]), { timeout: 10_000 }).toBe(expected);
+  await expect.poll(() => editAt(a, front[0], front[1]), { timeout: 10_000 }).toBe(expected);
 
   // Reloading B loads its edits from IndexedDB before it reconnects.
   await b.reload();
@@ -353,9 +363,9 @@ test('edits replicate through the host and survive a reload', async ({ browser }
 
 test('newcomers catch up from the host, and a returning player brings edits back', async ({ browser }) => {
   const world = `e2e${Date.now()}`;
-  // D is alone in the world and paints; then its tab closes (its storage stays).
-  const d = await join(browser, world);
-  await expect.poll(async () => (await probe(d)).role).toBe('host');
+  // D paints while cut off from the signal server (an unreachable address), so the
+  // edit exists only in D's browser storage: not on any host, and not on the seed.
+  const d = await join(browser, world, '&signal=ws://127.0.0.1:9');
   const [dx, dy] = await paintNext(d, 3, PATH);
   const dCtx = d.context();
   await d.close();
@@ -384,4 +394,37 @@ test('newcomers catch up from the host, and a returning player brings edits back
   await f.evaluate(([x, y]) => (window as any).__ti.paint(x, y, null), [dx, dy] as const);
   await expect.poll(() => editAt(e, dx, dy), { timeout: 10_000 }).toBe(null);
   await expect.poll(() => editAt(d2, dx, dy), { timeout: 10_000 }).toBe(null);
+});
+
+// ---- Seed peer (M4b) ----
+
+/** Tiles the seed peer has stored for a world. */
+async function seedTiles(world: string): Promise<number> {
+  const health = await (await fetch('http://localhost:8788/health')).json();
+  return health.worlds?.[world] ?? 0;
+}
+
+test('edits survive everyone logging off, kept by the seed peer', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  // The seed learns A hosts this zone and links up with it.
+  await expect.poll(() => a.evaluate(() => (window as any).__ti.session.seedCount), { timeout: 20_000 }).toBe(1);
+
+  const [px, py] = await paintNext(a, 2, PATH);
+  const [wx, wy] = await paintNext(a, -2, WALL);
+  await expect.poll(() => seedTiles(world), { timeout: 10_000 }).toBe(2);
+
+  // Everyone leaves, and A's browser storage goes with it.
+  await a.context().close();
+
+  // B arrives in a fresh browser to an empty zone, hosts it, and gets the edits from the seed.
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 10_000 }).toBe('host');
+  await expect.poll(() => editAt(b, px, py), { timeout: 20_000 }).toBe(PATH);
+  expect(await editAt(b, wx, wy)).toBe(WALL);
+
+  // New edits keep reaching the seed through the new host.
+  await paintNext(b, 3, PATH);
+  await expect.poll(() => seedTiles(world), { timeout: 10_000 }).toBe(3);
 });

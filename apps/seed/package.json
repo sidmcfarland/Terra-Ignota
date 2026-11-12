@@ -1,0 +1,14 @@
+{
+  "name": "@terra/seed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/seed.ts",
+    "start": "node src/seed.ts"
+  },
+  "dependencies": {
+    "node-datachannel": "0.33.6",
+    "ws": "^8.18.0"
+  }
+}

@@ -11,7 +11,7 @@ import {
   pickBackups, reviewHost, sanitizeMetrics, type Candidate, type Challenge, type HostMetrics,
 } from '../../../packages/shared/src/election.ts';
 import {
-  PROTOCOL_VERSION, type FromSignal, type NeighbourHost, type ToSignal,
+  PROTOCOL_VERSION, type FromSignal, type NeighbourHost, type ToSignal, type ZoneHost,
 } from '../../../packages/shared/src/protocol.ts';
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -31,6 +31,8 @@ interface Client {
   metrics: HostMetrics | null;
   /** An unanswered liveness probe, after a member reported this host silent. */
   probe?: { n: number; timer: ReturnType<typeof setTimeout> };
+  /** A seed peer: never in a zone; told about every zone's host. */
+  seed?: boolean;
   alive: boolean;
   budget: number;
 }
@@ -49,6 +51,7 @@ const clients = new Set<Client>();
 const peers = new Map<string, Client>();
 /** `${world}|${zone}` -> zone state. */
 const zones = new Map<string, Zone>();
+const seeds = new Set<Client>();
 let probeN = 0;
 
 const send = (c: Client | undefined, m: FromSignal) => {
@@ -57,6 +60,12 @@ const send = (c: Client | undefined, m: FromSignal) => {
 
 const zoneKey = (world: string, zx: number, zy: number) => `${world}|${zx},${zy}`;
 const zoneOfKey = (key: string) => key.slice(key.indexOf('|') + 1);
+
+/** Tell every seed that a zone's host changed (null: the zone emptied). */
+function tellSeeds(key: string, hostId: string | null) {
+  const bar = key.indexOf('|');
+  for (const s of seeds) send(s, { t: 'zoneHost', world: key.slice(0, bar), zone: key.slice(bar + 1), hostId });
+}
 
 /** Tell the host of zone (zx, zy), if it has one, who hosts each neighbouring zone. */
 function sendNeighbours(world: string, zx: number, zy: number) {
@@ -96,7 +105,10 @@ function review(key: string) {
   z.backups = backups;
   const zone = zoneOfKey(key);
   if (z.host) for (const id of z.members) send(peers.get(id), { t: 'host', zone, hostId: z.host, backups });
-  if (hostMoved) hostChanged(key);
+  if (hostMoved) {
+    hostChanged(key);
+    tellSeeds(key, z.host);
+  }
 }
 
 /** A member says its host went silent: probe the host from page script, and drop it if no answer comes. */
@@ -130,6 +142,7 @@ function leaveZone(c: Client) {
   if (z.members.length === 0) {
     zones.delete(key);
     hostChanged(key);
+    tellSeeds(key, null);
     return;
   }
   if (z.challenge?.id === c.peerId) z.challenge = null;
@@ -138,6 +151,24 @@ function leaveZone(c: Client) {
 }
 
 function onMessage(c: Client, msg: ToSignal) {
+  if (msg.t === 'seed') {
+    if (msg.v !== PROTOCOL_VERSION) return send(c, { t: 'error', message: 'protocol version mismatch; update the seed' });
+    if (!ID_RE.test(msg.peerId) || c.zoneKey) return send(c, { t: 'error', message: 'bad seed registration' });
+    if (!c.peerId) {
+      if (peers.has(msg.peerId)) return send(c, { t: 'error', message: 'peerId in use' });
+      c.peerId = msg.peerId;
+      peers.set(c.peerId, c);
+    }
+    c.seed = true;
+    seeds.add(c);
+    const hosts: ZoneHost[] = [];
+    for (const [key, z] of zones) {
+      if (z.host) hosts.push({ world: key.slice(0, key.indexOf('|')), zone: zoneOfKey(key), hostId: z.host });
+    }
+    send(c, { t: 'zones', hosts });
+    return;
+  }
+  if (c.seed && msg.t !== 'signal') return; // Seeds only relay signals.
   if (msg.t === 'join') {
     if (msg.v !== PROTOCOL_VERSION) return send(c, { t: 'error', message: 'protocol version mismatch; reload' });
     if (!ID_RE.test(msg.peerId) || !ID_RE.test(msg.world) || !ZONE_RE.test(msg.zone)) {
@@ -181,9 +212,11 @@ function onMessage(c: Client, msg: ToSignal) {
   }
   if (msg.t === 'signal') {
     if (!c.peerId || typeof msg.to !== 'string') return;
+    if (c.seed && msg.link !== 'seed') return;
     const target = peers.get(msg.to);
-    if (!target || target.world !== c.world) return;
-    const link = msg.link === 'border' ? 'border' : 'zone';
+    // Peers signal within their world; seeds belong to none, so they can reach any host.
+    if (!target || (target.world !== c.world && !c.seed && !target.seed)) return;
+    const link = msg.link === 'border' || msg.link === 'seed' ? msg.link : 'zone';
     send(target, { t: 'signal', from: c.peerId, link, data: msg.data });
   }
 }
@@ -191,7 +224,7 @@ function onMessage(c: Client, msg: ToSignal) {
 const http = createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, peers: peers.size, zones: zones.size }));
+    res.end(JSON.stringify({ ok: true, peers: peers.size, zones: zones.size, seeds: seeds.size }));
     return;
   }
   res.writeHead(404).end();
@@ -216,6 +249,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     if (c.probe) clearTimeout(c.probe.timer);
     clients.delete(c);
+    seeds.delete(c);
     leaveZone(c);
     if (c.peerId && peers.get(c.peerId) === c) peers.delete(c.peerId);
   });
