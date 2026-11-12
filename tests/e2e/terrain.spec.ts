@@ -3,7 +3,7 @@ import { terrainHash, worldSeed } from '../../packages/shared/src/index.ts';
 
 // Every device must compute exactly the same world: hosts check movement against it.
 // The same number as GOLDEN_HASH in packages/shared/src/shared.test.ts.
-const GOLDEN_HASH = 4034505386;
+const GOLDEN_HASH = 4064590671;
 
 test('the browser generates the same world as Node', async ({ page }) => {
   const errors: string[] = [];
