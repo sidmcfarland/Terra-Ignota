@@ -198,7 +198,7 @@ export class GameView {
     this.look.fixedWind = strength;
   }
 
-  /** What hangs in the air right now: dust, leaves, fireflies, heat, stars, dawn mist (each 0–1). */
+  /** What hangs in the air right now: dust, leaves, fireflies, stars, dawn mist (each 0–1). */
   get air(): Air {
     return this.look.air;
   }

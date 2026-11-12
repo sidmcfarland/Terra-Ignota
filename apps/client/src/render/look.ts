@@ -165,7 +165,7 @@ export const U = {
   uSeason: { value: new Vector4(0, 0, 0, 0) },
   /** How hard it is raining, 0–1: the land is darker when wet, and the water is pocked. */
   uRain: { value: 0 },
-  /** The air. x: heat shimmer, 0–1; y: stars showing in still water, 0–1; z: broken cloud, 0–1; w: how far the cloud shadows have drifted, in tiles. */
+  /** The air. x: unused; y: stars showing in still water, 0–1; z: broken cloud, 0–1; w: how far the cloud shadows have drifted, in tiles. */
   uAir: { value: new Vector4(0, 0, 0, 0) },
   /** Sunbeams in mist. xy: a unit vector across the beams (world x, z); z: their strength. */
   uShaft: { value: new Vector3(1, 0, 0) },
@@ -189,6 +189,7 @@ uniform vec3 uPaperLight;
 uniform vec4 uLamps[${LAMPS}];
 uniform vec3 uLampColor;
 uniform float uGlint;
+uniform sampler2D uGrain;
 uniform vec4 uWind;
 uniform vec4 uFog;
 uniform vec3 uFogBand;
@@ -267,15 +268,17 @@ vec3 seasonOn(vec3 albedo) {
   albedo = mix(albedo, l * vec3(1.3, 1.08, 0.72), green * uSeason.z * 0.7);
   return albedo * (1.0 - 0.2 * uRain);
 }
-// Snow settles in drifts on whatever faces the sky (up is the surface normal's y), but not under water.
-vec3 snowOn(vec3 albedo, vec3 p, float up) {
+// Snow settles in drifts on whatever faces the sky (n is the surface's normal), but not under water.
+// Where it lies is decided by real noise: the paper's grain, read at two scales, so drifts are broad
+// with ragged edges and have no pattern. (A sum of sine waves was used first; cut off at a level it
+// leaves round bare patches in rows, which read as polka dots.) Snow also goes first from slopes that
+// face the midday sun, so the land itself shapes the cover.
+vec3 snowOn(vec3 albedo, vec3 p, vec3 n) {
   if (uSeason.w <= 0.0) return albedo;
-  // Three bent waves in three directions, so the drifts wander and never fall into rows or spots.
-  float drift = 0.5 + 0.17 * (sin(p.x * 0.37 + p.z * 0.23 + 1.9 * sin(p.z * 0.097 - p.x * 0.031))
-    + sin(p.z * 0.41 - p.x * 0.19 + 1.7 + 2.3 * sin(p.x * 0.083 + p.z * 0.047)))
-    + 0.12 * sin(p.x * 0.21 - p.z * 0.33 + 0.7);
-  float cover = smoothstep(drift - 0.25, drift + 0.25, uSeason.w * 1.5) * smoothstep(0.0, 0.15, uSeason.w)
-    * smoothstep(0.45, 0.85, up) * step(uFogBand.z + 0.02, p.y);
+  float grain = 0.6 * texture2D(uGrain, p.xz * 0.0041).r + 0.4 * texture2D(uGrain, p.xz * 0.0137 + 0.37).r;
+  float drift = clamp(0.5 + (grain - 0.5) * 3.2 + 0.5 * (n.z * 0.95 - n.x * 0.31), 0.0, 1.0);
+  float cover = smoothstep(drift - 0.1, drift + 0.1, uSeason.w * 1.5) * smoothstep(0.0, 0.15, uSeason.w)
+    * smoothstep(0.45, 0.85, n.y) * step(uFogBand.z + 0.02, p.y);
   // Snow does not lie on desert sand (told by its colour: far more red than green).
   cover *= 1.0 - smoothstep(1.25, 1.5, albedo.r / max(albedo.g, 0.01));
   return mix(albedo, vec3(0.8, 0.85, 0.93), cover);
@@ -297,7 +300,6 @@ vec3 toLinear(vec3 srgb) { return pow(srgb, vec3(2.2)); }
 
 /** Fragment-stage helpers: paper, the ink-in transition and the colour grade. */
 export const FRAG_COMMON = UNIFORMS_GLSL + /* glsl */ `
-uniform sampler2D uGrain;
 
 float toothAt(vec2 p) { return texture2D(uGrain, p * 0.11 + 0.37).r; }
 
@@ -360,16 +362,10 @@ void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float reveal = revealAt(world.xz);
   world.y = mix(-0.03, world.y, riseOf(reveal));
-  vec3 albedo = snowOn(seasonOn(toLinear(aColor.rgb)), vec3(world.x, position.y, world.z), normal.y);
+  vec3 albedo = snowOn(seasonOn(toLinear(aColor.rgb)), vec3(world.x, position.y, world.z), normal);
   // aColor.a: how strongly the rock's bedding shows here (cliffs, and bare mountain rock more faintly).
   vStrata = vec2(aColor.a, position.y);
   vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade, world.xz)) + lampOn(world.xyz, normal) * aShade.x;
-  // Heat: on a still summer noon the light over bare sand and rock wavers.
-  if (uAir.x > 0.0) {
-    vec3 base = toLinear(aColor.rgb);
-    float bare = 1.0 - clamp((base.g - max(base.r, base.b)) * 6.0, 0.0, 1.0);
-    light *= 1.0 + 0.045 * uAir.x * bare * sin(world.x * 2.3 - world.z * 1.9 + uTime * 4.3 + 2.0 * sin(world.z * 0.9 + uTime * 1.3));
-  }
   vLit = mistOn(albedo * light, world.xyz, 1.0);
   vForm = dot(light, vec3(0.3333));
   vWash = mix(vec3(1.0), albedo / uParchment, 0.42);
@@ -477,9 +473,9 @@ void main() {
   albedo = mix(albedo, vec3(0.2, 0.135, 0.085) * ramp, bare * 0.85);
   local.xz = mix(local.xz, origin.xz + (local.xz - origin.xz) * 0.5, bare);
 #endif
-  albedo = snowOn(albedo, root.xyz, n.y);
+  albedo = snowOn(albedo, root.xyz, n);
 #else
-  albedo = snowOn(seasonOn(albedo), root.xyz, n.y);
+  albedo = snowOn(seasonOn(albedo), root.xyz, n);
   // Grass and leaves are supple: the tip goes with every gust, and bent grass shows its paler side.
   // The lean grows with height, a little less for tall things, which are stiffer. The flutter does not
   // grow with height: a reed four times as tall as a grass blade quivers by the same small amount.
@@ -889,9 +885,8 @@ export class Look {
     for (let c = 0; c < 3; c++) {
       L.sky[c] = (L.sky[c] + (overcast - L.sky[c]) * 0.55 * W.cloud) * (1 + 0.3 * W.cloud) + flash * FLASH[c];
     }
-    // In the heat of a summer noon the picture is a little brighter and a little bleached.
-    L.level *= (1 - 0.14 * W.cloud - 0.1 * fall - 0.12 * W.storm - 0.05 * W.fog) * (1 + 0.6 * flash) * (1 + 0.04 * air.heat);
-    L.sat *= (1 - 0.2 * W.cloud - 0.1 * W.fog) * (1 + 0.05 * S.spring + 0.04 * S.autumn - 0.1 * S.winter) * (1 - 0.06 * air.heat);
+    L.level *= (1 - 0.14 * W.cloud - 0.1 * fall - 0.12 * W.storm - 0.05 * W.fog) * (1 + 0.6 * flash);
+    L.sat *= (1 - 0.2 * W.cloud - 0.1 * W.fog) * (1 + 0.05 * S.spring + 0.04 * S.autumn - 0.1 * S.winter);
     L.soft += 0.1 * W.cloud;
     L.glint *= 1 - 0.85 * W.cloud;
     // The year colours the sun a little: lower and more golden in autumn, paler in winter.
@@ -927,7 +922,7 @@ export class Look {
     // A low sun (or, faintly, a low moon) rakes through the mist in beams that lie along its direction.
     const ground = Math.hypot(dir.x, dir.z) || 1, low = 1 - Math.min(1, Math.max(0, (dir.y - 0.1) / 0.4));
     U.uShaft.value.set(-dir.z / ground, dir.x / ground, up * low * sunIn * (moon ? 0.15 : 0.38));
-    U.uAir.value.set(air.heat, air.stars, W.cloud, this.cloudDrift);
+    U.uAir.value.set(0, air.stars, W.cloud, this.cloudDrift);
     // Snow lies through the winter, deeper while it is falling; a snowfall at any time leaves a dusting.
     U.uSeason.value.set(S.spring, S.autumn, S.winter, Math.max(S.winter * (0.55 + 0.45 * W.snow), 0.5 * W.snow));
     U.uRain.value = W.rain;
