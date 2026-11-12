@@ -13,7 +13,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
-import { Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
+import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
 import { Terrain, WATER_Y } from './terrain.ts';
 import { ZoneLines } from './zones.ts';
 
@@ -135,6 +135,7 @@ export class GameView {
   private frameTimes = new Float32Array(PERF_FRAMES);
   private cpuTimes = new Float32Array(PERF_FRAMES);
   private perfI = 0;
+  private lampDist = new Float64Array(LAMPS);
 
   constructor(tiles: TileCache) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -167,6 +168,16 @@ export class GameView {
     const s = Math.sin(this.yaw), c = Math.cos(this.yaw);
     // Screen-up is the camera's ground-projected forward: (-sin, -cos) in world x/y.
     return { x: c * d.x + s * d.y, y: -s * d.x + c * d.y };
+  }
+
+  /** The hour of the day being shown, 0–24. */
+  get hour(): number {
+    return this.look.hour;
+  }
+
+  /** Pin the time of day (hours, 0–24), or pass null to follow the shared clock again. */
+  setHour(hour: number | null) {
+    this.look.fixedHour = hour;
   }
 
   /** Draw zone borders and handoff margins on the ground (debug mode). */
@@ -216,10 +227,23 @@ export class GameView {
 
     const seen = new Set<string>();
     const v = new Vector3();
+    // Each explorer carries a lantern. Your own always shows; the rest go to whoever is nearest.
+    const lamps = U.uLamps.value, near = this.lampDist.fill(Infinity);
+    for (const l of lamps) l.w = 0;
     for (const p of players) {
       const a = this.avatar(p);
       const gy = Math.max(this.terrain.heightAt(p.x, p.y), WATER_Y - 0.25);
       a.mesh.position.set(p.x, gy, p.y);
+      let slot = 0;
+      if (!p.self) {
+        // Take the slot held by the farthest explorer so far, if this one is nearer.
+        slot = 1;
+        for (let i = 2; i < LAMPS; i++) if (near[i] > near[slot]) slot = i;
+        const d = (p.x - self.x) ** 2 + (p.y - self.y) ** 2;
+        if (d < near[slot]) near[slot] = d;
+        else slot = -1;
+      }
+      if (slot >= 0) lamps[slot].set(p.x, gy + LAMP_HEIGHT, p.y, 1);
       this.ground(a, p.x, p.y);
       v.set(p.x, gy + 1.25, p.y).project(this.camera);
       a.label.style.transform = `translate(${((v.x + 1) / 2) * w}px, ${((1 - v.y) / 2) * h}px) translate(-50%, -100%)`;
@@ -313,7 +337,8 @@ export class GameView {
     const t = this.terrain, bake = U.uSunBake.value, sun = U.uSunDir.value;
     t.shadeAt(x, y, a.shade);
     const horizon = a.shade.y + (a.shade.z - a.shade.y) * bake.y;
-    const lit = Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
+    // No direct light (shade, or the key light below the horizon) leaves only a soft dark patch.
+    const lit = this.look.key * Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
     a.strength.x = 0.2 + 0.3 * lit;
 
     const h = t.heightAt(x, y), e = 0.3;

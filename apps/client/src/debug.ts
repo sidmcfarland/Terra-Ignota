@@ -16,6 +16,8 @@ export interface DebugState {
   author: string;
   /** Renderer cost, or null when not drawing (`#render=0`). */
   perf: PerfStats | null;
+  /** The hour of the day being drawn (0–24), or null when not drawing. */
+  hour: number | null;
 }
 
 /**
@@ -77,14 +79,16 @@ const short = (id: string) => id.slice(0, 8);
 const ms = (v: number | null) => (v === null ? '—' : `${Math.round(v)}ms`);
 
 /** Renderer cost against the budgets in docs/ART_DIRECTION.md (12 ms, 150 draw calls, 300k triangles). */
-function perfLines({ perf }: DebugState): string[] {
+function perfLines({ perf, hour }: DebugState): string[] {
   if (!perf) return [];
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const clock = hour === null ? '' : `${String(Math.floor(hour)).padStart(2, '0')}:${String(Math.floor((hour % 1) * 60)).padStart(2, '0')}`;
   return [
     `FRAME  ${perf.frameMs.toFixed(1)}ms avg  ·  ${perf.frameP95.toFixed(1)}ms p95  ·  ${Math.round(1000 / (perf.frameMs || 1))} fps`,
     `       cpu ${perf.cpuMs.toFixed(1)}ms avg, ${perf.cpuMax.toFixed(1)}ms worst  ·  pixel ratio ${perf.pixelRatio}`,
     `DRAW   ${perf.drawCalls} calls  ·  ${k(perf.triangles)} triangles  ·  ${perf.geometries} geometries  ·  ${perf.textures} textures`,
     `CHUNKS ${perf.chunkBuilds} built  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms`,
+    `TIME   ${clock}  ·  #time=dawn|morning|noon|afternoon|golden|sunset|dusk|night or an hour holds it`,
     '',
   ];
 }

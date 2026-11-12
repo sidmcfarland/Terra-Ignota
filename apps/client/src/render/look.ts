@@ -14,6 +14,7 @@ import {
   type IUniform,
 } from 'three';
 import { rand2 } from '@terra/shared';
+import { hourAt, keyBody, lightAt, luminance, makeLight } from './day.ts';
 
 /**
  * The look: palette, lighting and the master shaders every surface is built from.
@@ -26,13 +27,10 @@ import { rand2 } from '@terra/shared';
  * is no full-screen pass and no shadow map.
  */
 
-/** sRGB hex. */
+/** sRGB hex. The colours of the light are in day.ts, hour by hour. */
 export const PALETTE = {
   parchment: 0xe8dcc0,
   ink: 0x3a2e22,
-  sun: 0xffe6be,
-  sky: 0xb3cdec,
-  bounce: 0x9c8566,
   waterShallow: 0x7fc0bd,
   waterDeep: 0x2f6687,
   foam: 0xf4efe2,
@@ -50,14 +48,23 @@ export const REVEAL_RADIUS = 44;
 export const REVEAL_BAND = 15;
 /** How far the edge of the known world wanders in and out, in tiles. */
 const REVEAL_WOBBLE = 2.2;
+/** Explorers carry a lantern: how many can light the land at once, how far each reaches (tiles) and how high it hangs. */
+export const LAMPS = 4;
+const LAMP_REACH = 7.5;
+export const LAMP_HEIGHT = 0.8;
+/** Luminance of open, level ground in the reference afternoon light. Blank parchment is drawn at this level. */
+const DAY_LEVEL = 0.88;
+/** How far the light on the parchment is pulled toward grey. */
+const PAPER_GREY = 0.5;
 
 // The sun travels a tilted arc: it rises east-south-east, leans south at midday and sets west-north-west.
+// The moon follows the same arc twelve hours behind it.
 const ARC_AXIS = (18 * Math.PI) / 180;
 const ARC_TILT = (38 * Math.PI) / 180;
 const EAST = new Vector3(Math.cos(ARC_AXIS), 0, Math.sin(ARC_AXIS));
 const SOUTH = new Vector3(-Math.sin(ARC_AXIS), 0, Math.cos(ARC_AXIS));
 
-/** Direction toward the sun. `theta` runs from 0 (sunrise) through π/2 (midday) to π (sunset). */
+/** Direction toward the sun (or moon). `theta` runs from 0 (rising) through π/2 (highest) to π (setting). */
 export function sunDirection(theta: number, out = new Vector3()): Vector3 {
   const up = Math.sin(theta);
   return out
@@ -113,7 +120,7 @@ function grainTexture(): DataTexture {
 /** Uniforms shared by every material: set once per frame, seen by all. */
 export const U = {
   uSunDir: { value: new Vector3(0, 1, 0) },
-  /** Linear colour times intensity. */
+  /** The key light, sun or moon: linear colour times intensity. */
   uSunColor: { value: new Color() },
   uSkyColor: { value: new Color() },
   uGroundColor: { value: new Color() },
@@ -129,6 +136,14 @@ export const U = {
   uInk: { value: new Color(PALETTE.ink) },
   /** Colour grade: rgb tint, a = saturation. Day/night, weather and seasons move this, not the assets. */
   uGrade: { value: new Vector4(1, 1, 1, 1) },
+  /** The light falling on blank parchment, so the map dims and cools with the land at dusk. */
+  uPaperLight: { value: new Color(1, 1, 1) },
+  /** Explorers' lanterns. xyz: where one hangs; w: how bright it is (0 = none). */
+  uLamps: { value: Array.from({ length: LAMPS }, () => new Vector4()) },
+  /** Lantern light: linear colour times strength. Black by day. */
+  uLampColor: { value: new Color(0, 0, 0) },
+  /** Strength of the key light's glint on water. */
+  uGlint: { value: 1 },
   uTime: { value: 0 },
   uGrain: { value: null as DataTexture | null },
 } satisfies Record<string, IUniform>;
@@ -145,6 +160,10 @@ uniform vec3 uReveal;
 uniform vec3 uParchment;
 uniform vec3 uInk;
 uniform vec4 uGrade;
+uniform vec3 uPaperLight;
+uniform vec4 uLamps[${LAMPS}];
+uniform vec3 uLampColor;
+uniform float uGlint;
 uniform float uTime;
 `;
 
@@ -172,6 +191,18 @@ vec3 lightOn(vec3 n, float ao, float shadow) {
   vec3 fill = mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5);
   return uSunColor * (ndl * shadow) + fill * ao;
 }
+// Lantern light on a point: a warm pool around each explorer after dark, wrapped so level ground still catches it.
+vec3 lampOn(vec3 p, vec3 n) {
+  if (uLampColor.r <= 0.0) return vec3(0.0);
+  float sum = 0.0;
+  for (int i = 0; i < ${LAMPS}; i++) {
+    vec3 d = uLamps[i].xyz - p;
+    float r2 = dot(d, d);
+    float fall = max(1.0 - r2 * ${(1 / (LAMP_REACH * LAMP_REACH)).toFixed(5)}, 0.0);
+    sum += uLamps[i].w * fall * fall * (0.6 + 0.4 * dot(n, d) * inversesqrt(r2 + 0.05));
+  }
+  return uLampColor * sum;
+}
 vec3 toLinear(vec3 srgb) { return pow(srgb, vec3(2.2)); }
 `;
 
@@ -189,7 +220,7 @@ vec3 paperAt(vec2 p, float tooth) {
   vec2 g = abs(fract(q / 64.0 + 0.5) - 0.5) * 64.0;
   vec2 fw = fwidth(q);
   vec2 l = 1.0 - smoothstep(fw * 0.5, fw * 1.5, g);
-  return mix(c, uInk, max(l.x, l.y) * 0.13 * (0.6 + 0.8 * blotch));
+  return mix(c, uInk, max(l.x, l.y) * 0.13 * (0.6 + 0.8 * blotch)) * uPaperLight;
 }
 
 vec3 grade(vec3 c) {
@@ -240,7 +271,7 @@ void main() {
   float reveal = revealAt(world.xz);
   world.y = mix(-0.03, world.y, riseOf(reveal));
   vec3 albedo = toLinear(aColor);
-  vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade));
+  vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade)) + lampOn(world.xyz, normal) * aShade.x;
   vLit = albedo * light;
   vForm = dot(light, vec3(0.3333));
   vWash = mix(vec3(1.0), albedo / uParchment, 0.42);
@@ -301,7 +332,8 @@ void main() {
   float grow = smoothstep(0.62, 1.0, reveal);
   vec4 world = modelMatrix * vec4(origin + (local - origin) * grow, 1.0);
   world.y = mix(-0.03, world.y, rise);
-  vLit = mix(uParchment * 0.8, albedo * lightOn(n, shade.x, bakedShadow(shade)), grow);
+  vec3 light = lightOn(n, shade.x, bakedShadow(shade)) + lampOn(world.xyz, n) * shade.x;
+  vLit = mix(uParchment * uPaperLight * 0.8, albedo * light, grow);
   vReveal = reveal;
   vMap = world.xz;
   gl_Position = projectionMatrix * viewMatrix * world;
@@ -330,6 +362,7 @@ varying vec3 vWorld;
 varying float vDepth;
 varying float vShadow;
 varying float vRise;
+varying vec3 vLamp;
 void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float rise = riseOf(revealAt(world.xz));
@@ -338,6 +371,7 @@ void main() {
   world.y += swell * (sin(world.x * 0.9 + uTime * 1.1) + sin(world.z * 1.3 - uTime * 0.8 + world.x * 0.4));
   vWorld = world.xyz;
   vDepth = aDepth;
+  vLamp = lampOn(world.xyz, vec3(0.0, 1.0, 0.0));
   vShadow = bakedShadow(aShade);
   vRise = rise;
   gl_Position = projectionMatrix * viewMatrix * world;
@@ -350,15 +384,16 @@ varying vec3 vWorld;
 varying float vDepth;
 varying float vShadow;
 varying float vRise;
+varying vec3 vLamp;
 void main() {
   // Face normal from screen-space derivatives: each ripple facet catches the light on its own.
   vec3 n = cross(dFdx(vWorld), dFdy(vWorld));
   n = normalize(vec3(n.x * 5.0, abs(n.y), n.z * 5.0));
   float ndl = max(dot(n, uSunDir), 0.0);
-  vec3 light = uSunColor * (ndl * vShadow) + mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5);
+  vec3 light = uSunColor * (ndl * vShadow) + mix(uGroundColor, uSkyColor, n.y * 0.5 + 0.5) + vLamp;
   vec3 col = mix(uShallow, uDeep, smoothstep(0.0, 2.4, vDepth)) * light;
   float glint = pow(max(dot(n, normalize(uSunDir + uViewDir)), 0.0), 48.0);
-  col += uSunColor * (glint * 0.5 * vShadow);
+  col += uSunColor * (glint * 0.5 * uGlint * vShadow);
   float alpha = mix(0.6, 0.96, smoothstep(0.0, 1.6, vDepth));
   // Foam where the water thins out, breathing in and out along the shore.
   float lap = 0.045 + 0.025 * sin(uTime * 0.8 + vWorld.x * 0.6 + vWorld.z * 0.45);
@@ -413,8 +448,9 @@ attribute float aTone;
 varying vec3 vLit;
 void main() {
   vec3 n = normalize(mat3(modelMatrix) * normal);
-  vLit = uColor * aTone * lightOn(n, uShade.x, bakedShadow(uShade));
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vLit = uColor * aTone * (lightOn(n, uShade.x, bakedShadow(uShade)) + lampOn(world.xyz, n));
+  gl_Position = projectionMatrix * viewMatrix * world;
 }`,
     FRAG_COMMON + /* glsl */ `
 varying vec3 vLit;
@@ -457,25 +493,62 @@ void main() {
   return m;
 }
 
-/** Sets the shared uniforms each frame. For now one fixed key light: a late-afternoon sun. */
+/** Sets the shared uniforms each frame from the time of day (see day.ts). */
 export class Look {
-  /** Where the sun is on its arc, 0 (sunrise) to π (sunset). */
-  sunTheta = (140 * Math.PI) / 180;
-  private readonly sun = new Color(PALETTE.sun);
-  private readonly sky = new Color(PALETTE.sky);
-  private readonly bounce = new Color(PALETTE.bounce);
+  /** Pin the time of day (hours, 0–24), or null to follow the shared clock. */
+  fixedHour: number | null = null;
+  /** The hour being shown. */
+  hour = 12;
+  /** How much direct light there is, 0–1: what a small thing's own shadow should follow. */
+  key = 1;
+  private readonly light = makeLight();
+  private readonly lamp = new Color(0xffae62);
+  /** The light on open, level ground this frame (scratch). */
+  private readonly open = [0, 0, 0];
 
   constructor() {
     U.uGrain.value ??= grainTexture();
   }
 
   update(focus: { x: number; y: number }, viewDir: Vector3, timeS: number) {
-    const dir = sunDirection(this.sunTheta, U.uSunDir.value);
-    U.uSunBake.value.x = Math.asin(Math.max(0, dir.y)) / (Math.PI / 2);
-    U.uSunBake.value.y = Math.min(1, Math.max(0, (this.sunTheta - 1.4) / 0.35));
-    U.uSunColor.value.copy(this.sun).multiplyScalar(1.2);
-    U.uSkyColor.value.copy(this.sky).multiplyScalar(0.66);
-    U.uGroundColor.value.copy(this.bounce).multiplyScalar(0.34);
+    const hour = (this.hour = this.fixedHour ?? hourAt(Date.now()));
+    const L = lightAt(hour, this.light);
+    const { moon, theta } = keyBody(hour);
+    const dir = sunDirection(theta, U.uSunDir.value);
+    // The key light fades out as it meets the horizon, where sun and moon change places.
+    const t = Math.min(1, Math.max(0, dir.y / 0.09));
+    const up = t * t * (3 - 2 * t);
+    const flat = up * Math.max(0, dir.y);
+
+    // Open, level ground is held at this hour's brightness; the three lights are scaled together to meet it.
+    const k = L.key, s = L.sky, b = L.bounce, open = this.open;
+    for (let c = 0; c < 3; c++) open[c] = k[c] * flat + s[c];
+    const scale = L.level / Math.max(luminance(open), 1e-3);
+    U.uSunColor.value.setRGB(k[0] * up * scale, k[1] * up * scale, k[2] * up * scale);
+    U.uSkyColor.value.setRGB(s[0] * scale, s[1] * scale, s[2] * scale);
+    U.uGroundColor.value.setRGB(b[0] * scale, b[1] * scale, b[2] * scale);
+    // Parchment takes the same light as open ground, but only half its colour: it stays paper at dawn and dusk.
+    const paper = scale / DAY_LEVEL, grey = luminance(open) * PAPER_GREY;
+    U.uPaperLight.value.setRGB(
+      (grey + open[0] * (1 - PAPER_GREY)) * paper,
+      (grey + open[1] * (1 - PAPER_GREY)) * paper,
+      (grey + open[2] * (1 - PAPER_GREY)) * paper,
+    );
+
+    U.uSunBake.value.set(
+      Math.asin(Math.max(0, dir.y)) / (Math.PI / 2),
+      Math.min(1, Math.max(0, (theta - 1.4) / 0.35)),
+      L.soft,
+    );
+    // The darker the hour, the cooler the whole picture, as eyes see by moonlight.
+    const cool = Math.min(1, Math.max(0, (0.5 - L.level) / 0.25));
+    U.uGrade.value.set(1 - 0.2 * cool, 1 - 0.05 * cool, 1 + 0.25 * cool, L.sat);
+    U.uGlint.value = L.glint;
+    // A lantern flame is never quite still.
+    const flicker = 1 + 0.035 * Math.sin(timeS * 7.3) + 0.025 * Math.sin(timeS * 12.1 + 1.3);
+    U.uLampColor.value.copy(this.lamp).multiplyScalar(1.3 * L.lamp * flicker);
+    this.key = up * (moon ? 0.55 : 1);
+
     U.uViewDir.value.copy(viewDir);
     U.uFocus.value.set(focus.x, focus.y);
     U.uTime.value = timeS;
