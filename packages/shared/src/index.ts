@@ -2,6 +2,7 @@ export * from './constants.ts';
 export * from './rng.ts';
 export * from './noise.ts';
 export * from './terrain.ts';
+export * from './hydro.ts';
 export * from './worldgen.ts';
 export * from './zones.ts';
 export * from './movement.ts';

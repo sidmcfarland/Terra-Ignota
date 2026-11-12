@@ -2,7 +2,7 @@ import type { TileOp } from './edits.ts';
 import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 

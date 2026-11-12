@@ -1,4 +1,8 @@
-import { Tile, findSpawn, groundAt, heightOf, newGround, terrainHash, tileAt, tileAtFlat, worldSeed } from '@terra/shared';
+import {
+  Channel, Tile, ZONE_TILES, channelSpans, findSpawn, getRegion, groundAt, heightOf, landAt, newGround, regionOf,
+  setRegionCacheSize, terrainHash, tileAt, tileAtFlat, worldSeed,
+} from '@terra/shared';
+import { RegionLoader } from './regions.ts';
 import { tileColor } from './render/atlas.ts';
 
 /**
@@ -8,16 +12,23 @@ import { tileColor } from './render/atlas.ts';
  * It paints generated tiles only (no edits) in the atlas's flat colours, shaded by slope. Up to 4 tiles
  * per pixel every pixel is a real tile; beyond that cliffs are too thin to show, so each pixel is the
  * tile its spot would be on level ground (one sample instead of four), and relief shows in the shading.
+ * Rivers and filled lakes need a drainage region computed for every 3,072 tiles square in view; workers
+ * do that first. From 4 tiles per pixel up, channels are also drawn as lines, since they are thinner
+ * than a pixel. A view that would need more than WATER_REGIONS regions is painted without them.
  */
 
 /** Above this many tiles per pixel, cliffs are not drawn. */
 const CLIFFS_UP_TO = 4;
+/** The most drainage regions a view may need and still show rivers and filled lakes. */
+const WATER_REGIONS = 120;
 
 const SCALES = [1, 2, 4, 8, 16, 32, 64];
 const NAMES = Object.fromEntries(Object.entries(Tile).map(([name, id]) => [id, name])) as Record<number, string>;
 
-export function showOverview(world: string) {
+export async function showOverview(world: string) {
   const seed = worldSeed(world);
+  const loader = new RegionLoader(seed, Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 1)));
+  await loader.around(ZONE_TILES / 2, ZONE_TILES / 2, 640);
   const params = new URLSearchParams(location.hash.slice(1));
   for (const id of ['hud', 'stick', 'debug', 'game']) {
     const el = document.getElementById(id);
@@ -66,7 +77,7 @@ export function showOverview(world: string) {
     location.hash = `w=${world}&at=${cx},${cy}`;
   });
 
-  const state = { done: false, world, seed, cx, cy, scale, across: 0, ms: 0, share: {} as Record<string, number> };
+  const state = { done: false, world, seed, cx, cy, scale, across: 0, ms: 0, water: true, regions: 0, share: {} as Record<string, number> };
   (window as unknown as { __ti: unknown }).__ti = {
     map: state,
     terrainHash: (w: string) => terrainHash(worldSeed(w)),
@@ -74,26 +85,31 @@ export function showOverview(world: string) {
   };
 
   const g = newGround();
-  let job = 0;
+  let job = 0, water = true;
 
   function show(x: number, y: number, s: number) {
     cx = x; cy = y; scale = s;
     const p = new URLSearchParams({ map: '1', w: world, scale: String(s), at: `${x},${y}` });
     history.replaceState(null, '', `#${p.toString().replace('%2C', ',')}`);
-    paint();
+    void paint();
   }
 
-  function paint() {
+  async function paint() {
     const mine = ++job;
     const w = (canvas.width = innerWidth), h = (canvas.height = innerHeight);
     // From 4 tiles per pixel up, pixels sit on the generator's lattice, which is much cheaper to sample.
     const snap = scale >= 4 ? 4 : 1;
     const x0 = Math.floor((cx - Math.floor(w / 2) * scale) / snap) * snap, y0 = Math.floor((cy - Math.floor(h / 2) * scale) / snap) * snap;
-    const kind = scale <= CLIFFS_UP_TO ? tileAt : tileAtFlat;
+    // The drainage regions the view covers. Few enough: workers compute them, then the tiles show their water.
+    const rx0 = regionOf(x0), rx1 = regionOf(x0 + w * scale), ry0 = regionOf(y0), ry1 = regionOf(y0 + h * scale);
+    const regions = (rx1 - rx0 + 1) * (ry1 - ry0 + 1);
+    water = regions <= WATER_REGIONS;
+    const wet = water;
+    const kind = scale <= CLIFFS_UP_TO ? tileAt : (sd: number, x: number, y: number) => tileAtFlat(sd, x, y, wet);
     // Heights of the row above, for shading.
     let above = new Float32Array(w + 1), here = new Float32Array(w + 1);
     const counts = new Map<number, number>();
-    Object.assign(state, { done: false, cx, cy, scale, across: w * scale, share: {} });
+    Object.assign(state, { done: false, cx, cy, scale, across: w * scale, water: wet, regions, share: {} });
     scaleButtons.forEach((b, i) => (b.style.fontWeight = SCALES[i] === scale ? '700' : '400'));
     head.innerHTML = '';
     head.append(
@@ -103,9 +119,25 @@ export function showOverview(world: string) {
       document.createElement('br'),
       `centre ${cx}, ${cy} · spawn ${Math.floor(spawn.x)}, ${Math.floor(spawn.y)}`,
       ...(scale > CLIFFS_UP_TO ? [document.createElement('br'), 'cliffs are too thin to draw at this scale'] : []),
+      ...(wet ? [] : [document.createElement('br'), 'rivers and filled lakes are not drawn at this scale']),
     );
-    legend.textContent = 'painting…';
     const started = performance.now();
+    if (wet) {
+      setRegionCacheSize(regions + 16);
+      let ready = 0;
+      const all: Array<Promise<void>> = [];
+      for (let ry = ry0; ry <= ry1; ry++) {
+        for (let rx = rx0; rx <= rx1; rx++) {
+          all.push(loader.ensure(rx, ry).then(() => {
+            if (mine === job) legend.textContent = `working out rivers: ${++ready} of ${regions} regions…`;
+          }));
+        }
+      }
+      legend.textContent = `working out rivers: 0 of ${regions} regions…`;
+      await Promise.all(all);
+      if (mine !== job) return;
+    }
+    legend.textContent = 'painting…';
     let row = 0;
 
     const slice = () => {
@@ -120,7 +152,8 @@ export function showOverview(world: string) {
           const t = kind(seed, x, y);
           counts.set(t, (counts.get(t) ?? 0) + 1);
           // Shade by slope, lit from the north-west: ground that rises away from the light is bright. Water is flat.
-          groundAt(seed, x, y, g);
+          if (wet) landAt(seed, x, y, g);
+          else groundAt(seed, x, y, g);
           const a = (here[i + 1] = Math.max(0, heightOf(g.u)));
           const shade = row === 0 || i === 0 ? 1 : Math.min(1.3, Math.max(0.6, 1 + (0.55 * (a - above[i])) / scale));
           const c = tileColor(t), o = i * 4;
@@ -132,6 +165,29 @@ export function showOverview(world: string) {
       }
       rows.forEach((img, k) => ctx.putImageData(img, 0, first + k));
       if (row < h) return void setTimeout(slice, 0);
+
+      // Channels as lines, where they are too thin for the tiles to show them whole.
+      if (wet && scale >= 4) {
+        const river = tileColor(Tile.River), stream = tileColor(Tile.Stream);
+        ctx.lineCap = 'round';
+        for (const [which, color, width] of [[Channel.Stream, stream, 1], [Channel.River, river, scale >= 16 ? 1.2 : 1.8]] as const) {
+          // Streams would crowd a small-scale map: rivers only there.
+          if (which === Channel.Stream && scale > 4) continue;
+          ctx.strokeStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          for (let ry = ry0; ry <= ry1; ry++) {
+            for (let rx = rx0; rx <= rx1; rx++) {
+              channelSpans(getRegion(seed, rx, ry), (ax, ay, bx, by, k) => {
+                if (k !== which) return;
+                ctx.moveTo((ax - x0) / scale, (ay - y0) / scale);
+                ctx.lineTo((bx - x0) / scale, (by - y0) / scale);
+              });
+            }
+          }
+          ctx.stroke();
+        }
+      }
 
       // The spawn, ringed.
       const sx = (Math.floor(spawn.x) - x0) / scale, sy = (Math.floor(spawn.y) - y0) / scale;
@@ -164,7 +220,7 @@ export function showOverview(world: string) {
   ];
   canvas.addEventListener('mousemove', (e) => {
     const [x, y] = tileUnder(e);
-    hover.textContent = `${x}, ${y}: ${NAMES[tileAt(seed, x, y)]}`;
+    hover.textContent = `${x}, ${y}: ${NAMES[water ? tileAt(seed, x, y) : tileAtFlat(seed, x, y, false)]}`;
   });
   canvas.addEventListener('click', (e) => {
     const [x, y] = tileUnder(e);
@@ -177,7 +233,7 @@ export function showOverview(world: string) {
   let resize = 0;
   addEventListener('resize', () => {
     clearTimeout(resize);
-    resize = window.setTimeout(paint, 200);
+    resize = window.setTimeout(() => void paint(), 200);
   });
-  paint();
+  void paint();
 }

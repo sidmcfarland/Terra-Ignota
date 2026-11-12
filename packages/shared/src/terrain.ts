@@ -32,9 +32,17 @@ export interface Ground {
   rain: number;
   /** 0..1: how waterlogged low ground is here (the fringe of a lake basin). */
   bog: number;
+  /**
+   * Set by landAt (hydro.ts), which adds rivers and filled lakes to the ground. Under a lake, `u` is
+   * the lake's surface and `lake` is the depth of water over the bed. On dry ground beside a lake
+   * `lake` is negative (how far above the water); with no lake near, -1.
+   */
+  lake: number;
+  /** Set by landAt: 0, or the Channel (stream or river) whose bed this point is in. */
+  channel: number;
 }
 
-export const newGround = (): Ground => ({ u: 0, inland: 0, temp: 0, rain: 0, bog: 0 });
+export const newGround = (): Ground => ({ u: 0, inland: 0, temp: 0, rain: 0, bog: 0, lake: -1, channel: 0 });
 
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -179,8 +187,24 @@ export function groundAt(seed: number, x: number, y: number, g: Ground): void {
     amp *= 0.5;
     freq *= 2;
   }
-  d /= 1.875;
-  ribs /= 1.875;
+  shape(g, d / 1.875, ribs / 1.875, true);
+}
+
+/**
+ * The ground without its fine noise or its terraces, at a point on the lattice (x and y multiples of
+ * 4): the broad shape of the land, which is what water follows. (With terraces in, every low place
+ * ringed by an escarpment would be a lake. Left out, a river meets an escarpment and cuts through it.) The drainage simulation (hydro.ts) samples this
+ * every 32 tiles; it skips the cache, since those points are far apart.
+ */
+export function macroAt(seed: number, x: number, y: number, g: Ground): void {
+  slowMaps(seed, x, y, f, 0);
+  shape(g, 0, 0, false);
+}
+
+/** Height and climate from the slow maps in `f` and the fine noise at the point. */
+function shape(g: Ground, d: number, ribs: number, terraces: boolean): void {
+  g.lake = -1;
+  g.channel = 0;
   const inland = f[CONT] + COAST_DETAIL * d - COAST;
   g.inland = inland;
   g.temp = clamp(f[TEMP] * 1.7, -1, 1);
@@ -223,7 +247,7 @@ export function groundAt(seed: number, x: number, y: number, g: Ground): void {
   // slowly the step spreads into a ramp, which is the way up.
   // A terrace comes and goes along its length, so an escarpment is a run of cliff, not a closed ring.
   const terraced = Math.max(smoothstep(-0.02, 0.08, rug), 0.9 * smoothstep(0.2, 0.5, -rain)) * smoothstep(-0.08, 0.14, f[RIDGE3]);
-  if (terraced > 0) {
+  if (terraces && terraced > 0) {
     const p = f[TERRACE] + 0.08 * d;
     relief += 0.15 * terraced * (1 - 0.85 * m) * (smoothstep(0.05, 0.05 + STEP, p) + 0.8 * smoothstep(0.24, 0.24 + STEP, p));
   }

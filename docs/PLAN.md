@@ -50,7 +50,7 @@ infra/            docker-compose: signal + coturn + seed
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
-| M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | **Step 1 (layered maps) built** 2026-11-12, protocol 8: plains, ranges, cliffs, an ocean, separate lakes and six climates, with the same hash in Node, Chromium and Bun (JavaScriptCore). Firefox is still owed. **Step 2 (rivers) not built.** See "Natural terrain" |
+| M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | **Built** 2026-11-12, protocol 9. Step 1: plains, ranges, cliffs, an ocean and six climates from layered maps. Step 2: rivers, streams and lakes at their own levels from a drainage simulation; every channel leads downhill to a lake or the sea, and regions agree at their edges. The same world hash in Node, Chromium and Bun (JavaScriptCore); **a run in Firefox or Safari is still owed**, and no phone was measured. See "Natural terrain" |
 | M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
@@ -122,7 +122,7 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **A Node peer is a slow host.** For the seed to host zones (M7), node-datachannel's `send` cost applies: a bot host spent 5.5ms a tick on 24 clients on this machine.
 - **Node timers on Windows fire in steps of about 16ms**, so a 50ms interval ran at 16 Hz. Sessions now book each tick against an ideal timeline, which also keeps the rate under load in browsers.
 
-## Natural terrain (step 1 built 2026-11-12; step 2 planned)
+## Natural terrain (built 2026-11-12, protocol 9)
 **Why.** Before M4c, `tileAt` cut one elevation noise and one moisture noise at fixed thresholds, the same everywhere. Every hill was the same kind of hill, all water was one kind of water, and the land read as a blob. Sid wants terrain that looks like the natural world: rivers and streams shaped by gravity, steep mountains and sheer cliffs, wide plains with little relief, and oceans that are distinct from lakes and ponds.
 
 **When.** Before the M5 build starts. M5's first slice wipes existing worlds anyway, and M5 then freezes where landmarks and resources go (`landmarkAt`, `nodeAt`), which sit on top of the terrain. Changing terrain after that moves everything players have found.
@@ -135,7 +135,7 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - Biomes come from temperature, rainfall and altitude together. The snow line moves with climate.
 - Done when: one seed shows plains, ranges, cliffs, an ocean and separate lakes within a few thousand tiles; and a fixed sample of the world hashes to the same value in Node, Chromium and one other browser engine.
 
-**Step 2: rivers, by simulating each region.**
+**Step 2: rivers, by simulating each region.** (The plan. What was built differs in one way, the third point: see "Step 2 as built".)
 - The world is cut into large squares. For each, a coarse heightmap is built from the seed, water is routed downhill, basins fill into lakes with outlets, and the result is cached.
 - Rivers are carved into the terrain, so valleys follow them. Streams join into rivers and reach a lake or the sea.
 - Where rivers cross from one region to the next is fixed from the seed of the shared edge, so neighbouring regions agree without knowing each other.
@@ -152,7 +152,7 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **Renderer:** sheer cliffs need vertical faces in the chunk mesh. New water kinds (river, lake, sea) and new biomes need colours and ground cover. This answers two of the visual foundation's findings: "worldgen has one climate" and "sea and lake are the same tile".
 - **Movement:** today any tile that isn't deep water, snow or a wall is walkable, however steep. Cliffs and rivers need rules in `step()`.
 - **M5 design:** bridges and steps already exist to cross deep water and snow, so rivers and cliffs give them more to do. Landmark and resource placement should be built on the new terrain.
-- **Chunk building in a worker** (a visual foundation finding) was expected to become necessary. Step 1 turned out no slower than the old generator (see the measurements below), so it is not needed for terrain yet; step 2's region precompute will need one.
+- **Chunk building in a worker** (a visual foundation finding) was expected to become necessary. Step 1 turned out no slower than the old generator, and step 2 left chunk generation where it was (see the measurements below). What step 2 added is a worker for the drainage regions.
 
 **Decided (2026-11-12).**
 1. **Cliffs block.** Gentle and moderate slopes are walkable. Sheer cliff faces block like walls until a player builds Steps (from the M5 design). No slope-based slowing.
@@ -161,6 +161,7 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 4. **Region size is measured, then picked.** The build tries sizes from about 1,000 to 4,000 tiles across and picks the largest whose first compute stays within a budget suited to a phone. The choice and the numbers get recorded here.
 
 ### Step 1 as built (2026-11-12, protocol 8)
+(Written when step 1 landed. Step 2 has since changed three things said here: lakes now stand at their own level, not at sea level; streams and rivers are generated; and the hash values below were step 1's. The current ones are under "Step 2 as built".)
 The generator is `packages/shared/src/terrain.ts` (the maps and the height) and `worldgen.ts` (tiles, rules, spawn, the hash). To look at a world: `#map=1&w=<world>` in the client paints it top-down at 1 to 64 tiles per pixel (click to recentre, "Walk here" opens the game there).
 
 **The maps.** Each is noise at its own size; the sizes are the width of one feature, in tiles.
@@ -183,7 +184,7 @@ The generator is `packages/shared/src/terrain.ts` (the maps and the height) and 
 
 **Biomes** come from temperature (which falls with altitude), rainfall and altitude: snow, bare rock, tundra, conifer forest, grass, broadleaf forest, meadow, desert, marsh (the wet fringe of a lake basin) and sand (sea beaches only). The snow line sits at elevation 0.75 in a temperate place, lower where it is cold (never below 0.35) and is absent where it is hot.
 
-**Tiles and rules.** New ids, appended: `Lake` 10, `Stream` 11, `River` 12, `Cliff` 13, `Desert` 14, `Tundra` 15, `Marsh` 16, `Conifer` 17, `LakeShallows` 18. `TILE_COUNT` is 19, so M5's `Bridge` and `Steps` take 19 and 20, and **M5's first slice takes protocol 9**.
+**Tiles and rules.** New ids, appended: `Lake` 10, `Stream` 11, `River` 12, `Cliff` 13, `Desert` 14, `Tundra` 15, `Marsh` 16, `Conifer` 17, `LakeShallows` 18. `TILE_COUNT` is 19, so M5's `Bridge` and `Steps` take 19 and 20. (Step 2 took protocol 9, so **M5's first slice takes protocol 10**.)
 - Block: deep sea, deep lake (`Lake`), `River`, `Cliff`, snow, walls.
 - Wade (half speed): shallow sea, `LakeShallows`, `Stream`.
 - Everything else walks at full speed, marsh included.
@@ -227,10 +228,67 @@ So chunk generation is no slower than before, and step 1 does not need a worker.
 - **The overview is slow at coarse scales on this machine** (about 15 s for a full window at 16 tiles per pixel): every pixel is a lattice point of its own there. It paints progressively.
 - **Every world starts mild.** See the decision log: the origin of every world is low, temperate land.
 
-**For step 2.** Nothing in step 1 argues against the plan. Three things to settle first:
-- **Rivers make the generator need its region.** Today any tile can be computed on its own. Once rivers are carved, a chunk's tiles depend on its region's precompute, which is planned for a worker. `step()` and host checks need tiles at once, so either the first compute of a region blocks, or tiles near an uncomputed region are provisional. This decides the region size as much as the phone budget does.
-- **Lake levels** (the first finding): step 2 should replace step 1's sea-level basins with filled ones, and the renderer needs per-lake water heights before that looks right.
-- **Build the region's coarse heightmap from `groundAt` on the 4-tile lattice.** A sample there costs one lattice point, so a 2,000-tile region at 4-tile spacing is 250,000 points, each about 30 noise calls.
+### Step 2 as built (2026-11-12, protocol 9)
+The drainage simulation is `packages/shared/src/hydro.ts`; `landAt` there is the ground with its water, and `tileAt`, `generateChunk` and `elevationAt` use it.
+
+**How it works.** The broad shape of the land (step 1's ground without its fine noise and without terraces) is sampled on a grid of nodes 32 tiles apart. On that grid:
+1. **Hollows fill.** From every node with no lower neighbour the water rises, lowest ground first, until it finds lower ground beyond or the sea. The highest ground it covered is the lake's level; what it covered before that is under the lake. A hollow shallower than 0.03 fills without showing as a lake.
+2. **Wide basins get an outlet or stay inland lakes.** A flood is only followed 5 nodes (160 tiles) from its lowest point. A basin wider than that gets a shallow lake at its low point; then, from its node nearest the sea, a way out is looked for towards the sea, up to 16 nodes long, lowering whatever is in the way. If one is found the river cuts a gorge through the rim. If not, the basin keeps its water.
+3. **Water flows** from each node to its lowest neighbour, and across a lake to its outlet.
+4. **Rain adds up** along the flow (1 a node, 2 where it rains more), counted 20 nodes upstream. 18 makes a stream, 90 a river, and any channel that has flowed 20 nodes (640 tiles) is a river.
+
+Then, tile by tile: a channel runs in smooth curves between the nodes' river points; its water only ever falls, and the ground is cut down to it (a valley, or a gorge through a hill or an escarpment) or raised to it (a low levee). Ground below a lake's level is under that lake.
+
+**Regions agree with no edge data. This is where the build left the plan.** The plan fixed river crossings from a seed on each shared edge. That makes region edges into walls except at the crossings, so water runs along them and lakes pile up against them. Instead every rule above is *local*: what a node ends up as depends only on the land within a fixed distance (floods 5 nodes, outlets 16, rain 20). A region is then only a unit of work and of caching: it computes a window 88 nodes (2,816 tiles) wider on every side than what it keeps, and what it keeps is exactly what any other window would have computed. Two regions hold bit-identical values for the nodes they share. The price is that margin: a region's cost is mostly margin, whatever its size.
+
+**Tiles and rules.** The rules did not change: `River` blocks, `Stream` wades.
+- A stream is 1.7 to 2.5 tiles wide, a river 3.4 to 6.
+- **Fords:** one river span in ten is wadeable (`Stream` tiles) along its middle, about 20 tiles of river.
+- **Lakes** are `Lake` where the water is deeper than 0.16 (the same depth as deep sea), `LakeShallows` down to 0.03, and `Marsh` where it barely covers the ground (in a dry climate that ground is left as it is).
+- Where a stream ends on open ground with no lake, it ends in a small pond, dug 20 tiles across.
+- Lakes keep off a strip along the coast, so lake water still never touches sea water. A hollow below sea level that no flood reached is still a sea-level lake, as in step 1.
+- Under the sea `elevationAt` is the sea bed, as before. Under a lake or in a channel it is the **water's surface**; `landAt` gives the depth (`Ground.lake`) and the channel (`Ground.channel`).
+
+**The worker.** A region takes about a quarter of a second, too long for the middle of a frame.
+- **Client:** `RegionLoader` (`apps/client/src/regions.ts`) has a worker compute every region within 640 tiles of the player, once a second, and the region the game starts in before the first frame. Tiles are still read synchronously: a region that is not ready is computed on the spot (`getRegion`), so nothing is ever provisional and `step()` and host checks always see the real world. That stall should only happen after a teleport.
+- **Bots:** no worker. Each process computes the region its zones are in once, at start-up, before it measures.
+- **Seed:** nothing. The seed never reads terrain.
+
+**Region size: measured, then picked** (decision 4). One region, median and worst of 12 (4 worlds × 3 regions), Node 22 on the dev machine:
+| Region | Window computed | Median | Worst | Per million tiles kept |
+|---|---|---|---|---|
+| 1,024 tiles | 219 × 219 nodes | 168–189 ms | 232 ms | 160–181 ms |
+| 2,048 tiles | 251 × 251 nodes | 175–183 ms | 234 ms | 42–44 ms |
+| **3,072 tiles** | 283 × 283 nodes | 224–225 ms | 261 ms | 24 ms |
+| 4,096 tiles | 315 × 315 nodes | 285–294 ms | 321–525 ms | 17–18 ms |
+
+The margin dominates, so a small region costs nearly as much as a large one. The budget I set is 250 ms for a region on the dev machine: the stall if one is ever computed on the spot, and the wait before the first frame. 3,072 tiles is the largest inside it. The budget is a judgment, and **no phone was measured**: the assumption is that a three-year-old mid-range phone is about as fast per core as this 2008 desktop. A region kept in memory is about 230 kB, and 16 are held.
+
+**Chunk generation** did not slow down: 1.15–1.19 ms a chunk for tiles and 0.77–0.79 ms for the renderer's height grid, with the region ready (step 1: 1.17 and 0.71 ms in the same run).
+
+**Against the done-when.**
+- *Every river tile has a downhill path to a lake or the sea:* yes. On the node grid a test follows every channel of three worlds, across regions, to the sea or a lake, never rising. In the tiles a test checks every channel tile has a wet neighbour no higher than itself; a wider run of the same check passed on 18,632 channel tiles in six worlds.
+- *Rivers line up across region edges:* yes, by construction, and tested: neighbouring regions agree bit for bit on every node they share, and a region computed in a much wider window (6 regions, 17 nodes wider) is identical.
+- *A region's precompute fits a measured budget:* 224 ms median against 250 ms, on the dev machine only.
+- *The same cross-engine hash:* `terrainHash` now covers the ground at 1,024 scattered points, the full drainage of three regions, and up to 24 chunks in each chosen where there is water. World `golden` hashes to 178363682 in Node 22 (pinned unit test), in Chromium (e2e, with a new world each run as well) and in Bun 1.3.6 / JavaScriptCore (by hand; `terra` and `vista` matched too). **Firefox or Safari is still owed**, as in step 1.
+
+**Checked.** `npm run typecheck`, `npm test` (74 tests) and `npm run e2e` (15 tests, repeated 3 times: 45 of 45) pass. A swarm of 30 bots over 2 zones ran stable on the terrain with rivers: 20 zone crossings, no position corrected by a host.
+
+**What the water looks like in numbers.** Four worlds, a 12,000-tile square each, sampled every 100 tiles: the sea is 33% of the world. Of the land: grass 21%, conifer forest 16%, tundra 16%, broadleaf forest 11%, desert 7.5%, meadow 7%, rock 5%, marsh 4%, lake shallows 3.9%, snow 3%, deep lake 2.9%, sand 1.6%, cliff 0.6%, stream 0.6%, river 0.5%. 7% of the land blocks movement (it was 6% before rivers). A region holds about 440 spans of stream and 215 of river (a span is about 40 tiles). Followed downstream, 57% of spans reach the sea, 23% end in an inland lake and 20% in a pond.
+
+**Guessed, for Sid to judge.** How much rain makes a stream or a river, how wide they are, how often a river has a ford (one span in ten), how deep a hollow must be to show as a lake, and the 250 ms budget. Lakes and marsh may be more plentiful than wanted; the knobs are `LAKE_MIN` in `hydro.ts` and the basin `brim` in `terrain.ts`. All are constants; changing any changes every world and the golden hash.
+
+**Findings (not built).**
+- **Rivers and lakes are flat colour in the 3D view.** The renderer draws one water surface, at sea level. A lake above sea level, a river and a stream are drawn as ground at the water's height in their placeholder colour. Step 1's sea-level lakes had real water; they now stand at their own level and lost it. Drawing water at each lake's and river's own height is visual work: `landAt` gives the surface and the depth at any point.
+- **Many rivers end in inland lakes, not the sea.** Noise terrain is full of closed basins. An outlet is cut only when one is found within 512 tiles towards the sea. Longer cuts would send more rivers to the sea and cost a wider margin.
+- **A river stops growing after 640 tiles.** Rain is only counted that far upstream, so there is no great river fed by a whole continent, and a long river can narrow a little where far headwaters drop out of the count. It never drops back below a river.
+- **A lake is at most about 350 tiles across.** A wider basin gets a small lake at its low point instead.
+- **Lake shores are a little blocky**, and where two lakes of different levels meet the water steps down. The lake's outline comes from nodes 32 tiles apart.
+- **Rivers ignore terraces when choosing their way**, then cut through them: a river on a plateau runs in a canyon. Otherwise every low place ringed by an escarpment was a lake.
+- **Nothing checks a player isn't hemmed in by rivers.** Rivers start as streams, which wade, and one span in ten is a ford, so there is normally a way round. `findSpawn` still only guarantees 6 clear tiles.
+- **A region computed on the spot stalls the game for about a quarter of a second.** The worker makes that rare, not impossible. A host that is far from a client it is checking (it never is, within one zone) would hit it.
+- **The overview needs a region for every 3,072 tiles square it shows**: about 20 s for a full window at 16 tiles per pixel here, and beyond 120 regions it paints without rivers and filled lakes.
+- **M5's design:** Bridges now have rivers and lakes to cross, and fords are a thing to find. Its landmark and resource rules still need the new tiles (see step 1's findings).
 
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
@@ -289,6 +347,13 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Replace threshold-on-noise terrain with layered maps, then region-simulated rivers, before M5 | Sid wants terrain that looks natural. M5 wipes worlds at its first slice and then freezes landmark and resource placement, so before M5 is the cheapest time. |
 | Cliffs block, streams wade, rivers block | They turn terrain into routes and obstacles, and give the M5 Steps and Bridges a purpose inland. Slope slowing and river currents were left out to keep `step()` and the host's checks simple. |
 | New terrain adds river, stream, lake, cliff, desert, tundra, marsh and conifer forest | Enough that climates feel different, while staying a set the visuals can do well. Cohesion over variety. |
+| Regions agree because every drainage rule is local, not because of seeds on their shared edges | Edge seeds turn region edges into walls with gates: water runs along them. With local rules a region is only a cache, and two regions compute bit-identical values where they overlap. It costs a wide margin around every region. |
+| Drainage nodes are 32 tiles apart and sample the land without its fine noise or terraces | Water follows the broad shape of the land. Sampled finer, every rib on a mountainside was a pit; with terraces in, every low place ringed by an escarpment was a lake. The tiles then cut each channel through whatever fine ground is in its way. |
+| A basin too wide to flood gets a small lake and an outlet cut towards the sea, or stays an inland lake | Following a flood further costs margin on every region. Filling such a basin part-way gave huge shallow sheets at an arbitrary level. |
+| Regions are 3,072 tiles across | Measured: the fixed margin dominates, so size barely changes the cost. It is the largest that computes within 250 ms on the dev machine (decision 4). |
+| Tiles are never provisional: a region that isn't ready is computed on the spot | `step()` and host checks must see the real world. A worker gets regions ready ahead of the player, so the stall should only follow a teleport. |
+| One river span in ten is a ford | Sid's rule lets a river be crossed at a ford. Without any, a river from the mountains to the sea cuts the land in two until M5's bridges. |
+| Under a lake or in a channel, `elevationAt` is the water's surface | The renderer has one water surface, at sea level. Flat ground in a water colour reads as a lake; a dry pit in a water colour does not. `landAt` has the depth for when water is drawn properly. |
 | Rivers come from simulating each large region, not from carved noise lines | Sid asked for rivers shaped by gravity. Noise lines are cheaper but don't truly flow downhill. |
 | Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
 | Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |

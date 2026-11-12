@@ -6,7 +6,7 @@ import {
 } from './index.ts';
 
 /** terrainHash(worldSeed('golden')). Also in tests/e2e/multiplayer.spec.ts, which checks browsers get it too. */
-const GOLDEN_HASH = 4034505386;
+const GOLDEN_HASH = 178363682;
 
 describe('worldgen', () => {
   const seed = worldSeed('test');
@@ -48,13 +48,13 @@ describe('worldgen', () => {
 
   it('uses only arithmetic that is exact on every engine', () => {
     const exact = ['floor', 'abs', 'sqrt', 'imul', 'min', 'max', 'round'];
-    for (const file of ['noise.ts', 'terrain.ts', 'worldgen.ts', 'rng.ts', 'movement.ts']) {
+    for (const file of ['noise.ts', 'terrain.ts', 'hydro.ts', 'worldgen.ts', 'rng.ts', 'movement.ts']) {
       const src = readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, '');
       for (const m of src.matchAll(/Math\.(\w+)/g)) expect(exact, 'Math.' + m[1] + ' in ' + file).toContain(m[1]);
     }
   });
 
-  it('shows plains, ranges, cliffs, an ocean, separate lakes and several climates near the start', () => {
+  it('shows plains, ranges, cliffs, an ocean, separate lakes, rivers and several climates near the start', () => {
     const s = findSpawn(seed);
     const seen = new Set<number>();
     for (let y = -3000; y < 3000; y += 32) {
@@ -62,10 +62,10 @@ describe('worldgen', () => {
     }
     for (const t of [
       Tile.DeepWater, Tile.Water, Tile.Sand, Tile.Grass, Tile.Forest, Tile.Meadow, Tile.Rock, Tile.Snow,
-      Tile.Lake, Tile.LakeShallows, Tile.Cliff, Tile.Desert, Tile.Tundra, Tile.Marsh, Tile.Conifer,
+      Tile.Lake, Tile.LakeShallows, Tile.Cliff, Tile.Desert, Tile.Tundra, Tile.Marsh, Tile.Conifer, Tile.Stream, Tile.River,
     ]) expect(seen, 'tile ' + t).toContain(t);
-    // Nothing generates these: rivers and streams come with step 2; paths and walls are player-made.
-    for (const t of [Tile.Stream, Tile.River, Tile.Path, Tile.Wall]) expect(seen).not.toContain(t);
+    // Paths and walls are player-made: nothing generates them.
+    for (const t of [Tile.Path, Tile.Wall]) expect(seen).not.toContain(t);
   }, 60_000);
 
   it('keeps lakes apart from the sea', () => {
