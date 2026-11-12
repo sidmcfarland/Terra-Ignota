@@ -1,16 +1,16 @@
 import {
   CapsuleGeometry,
   Color,
-  DirectionalLight,
-  HemisphereLight,
   Mesh,
-  MeshLambertMaterial,
   OrthographicCamera,
+  PlaneGeometry,
   Scene,
+  ShaderMaterial,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
+import { Look, PALETTE, REVEAL_RADIUS, paperMaterial, solidMaterial } from './look.ts';
 import { Terrain, WATER_Y } from './terrain.ts';
 import { ZoneLines } from './zones.ts';
 
@@ -25,6 +25,27 @@ export interface Player {
 const PITCH = Math.atan(1 / Math.SQRT2);
 const CAM_DIST = 400;
 const TURN_SPEED = 8; // rad/s easing toward the target yaw
+/** The parchment lies below the deepest seabed, so nothing ever dips under it. */
+const PAPER_Y = -40;
+const PERF_FRAMES = 120;
+
+/** What the renderer is costing, for the debug panel and for checking budgets. */
+export interface PerfStats {
+  /** Time between frames (ms): mean and 95th percentile over the last couple of seconds. */
+  frameMs: number;
+  frameP95: number;
+  /** Time spent inside `frame()` on the main thread (ms): mean and worst. */
+  cpuMs: number;
+  cpuMax: number;
+  drawCalls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+  /** Chunk meshes built so far, and the slowest build (ms). */
+  chunkBuilds: number;
+  chunkBuildMax: number;
+  pixelRatio: number;
+}
 
 interface Avatar {
   mesh: Mesh;
@@ -41,7 +62,8 @@ export class GameView {
   private renderer: WebGLRenderer;
   private scene = new Scene();
   private camera = new OrthographicCamera(-1, 1, 1, -1, 1, CAM_DIST * 2);
-  private sun = new DirectionalLight(0xfff1dc, 2.8);
+  private look = new Look();
+  private paper = new Mesh(new PlaneGeometry(1, 1).rotateX(-Math.PI / 2), paperMaterial());
   private terrain: Terrain;
   private zoneLines: ZoneLines;
   private avatars = new Map<string, Avatar>();
@@ -49,22 +71,27 @@ export class GameView {
   private yaw = Math.PI / 4;
   private targetYaw = Math.PI / 4;
   private lastT = performance.now();
+  private lastFrame = performance.now();
   private size = { w: 0, h: 0 };
+  private viewDir = new Vector3();
+  private frameTimes = new Float32Array(PERF_FRAMES);
+  private cpuTimes = new Float32Array(PERF_FRAMES);
+  private perfI = 0;
 
   constructor(tiles: TileCache) {
-    this.renderer = new WebGLRenderer({ antialias: true });
+    this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.setClearColor(0x0e1a24);
+    this.renderer.setClearColor(PALETTE.parchment);
     this.canvas = this.renderer.domElement;
 
     this.terrain = new Terrain(tiles);
     this.scene.add(this.terrain.group);
     this.zoneLines = new ZoneLines(tiles.seed);
     this.scene.add(this.zoneLines.group);
-    this.scene.add(new HemisphereLight(0xcfe3ff, 0x3a2e22, 0.75));
-    this.sun.position.set(-0.6, 1, 0.35).multiplyScalar(100);
-    this.scene.add(this.sun, this.sun.target);
-    this.scene.background = new Color(0x0e1a24);
+    // Drawn after the land, so it only costs the pixels the land leaves bare.
+    this.paper.renderOrder = 1;
+    this.paper.frustumCulled = false;
+    this.scene.add(this.paper);
 
     this.labels.className = 'labels3d';
     document.body.appendChild(this.labels);
@@ -116,13 +143,17 @@ export class GameView {
     this.camera.top = h / 2 / zoom;
     this.camera.bottom = -h / 2 / zoom;
     this.camera.updateProjectionMatrix();
-    this.sun.target.position.copy(target);
-    // Low sun from the west-north-west so slopes facing away fall into shade.
-    this.sun.position.copy(target).add(new Vector3(-90, 55, -30));
+    this.viewDir.set(cp * Math.sin(this.yaw), Math.sin(PITCH), cp * Math.cos(this.yaw));
+    this.look.update(self, this.viewDir, now / 1000);
 
     // Ground seen at this pitch stretches ~1/sin(pitch) vertically.
     const radius = Math.hypot(w, h / Math.sin(PITCH)) / zoom / 2;
-    this.terrain.update(self.x, self.y, radius);
+    // Beyond the known world there is only parchment, so there is nothing to build or draw.
+    this.terrain.update(self.x, self.y, Math.min(radius, REVEAL_RADIUS + 4));
+    // The paper is far below the land, so it has to reach further up the screen to fill the view.
+    const reach = (radius + Math.abs(PAPER_Y) / Math.tan(PITCH)) * 2.2;
+    this.paper.position.set(target.x, PAPER_Y, target.z);
+    this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
 
     const seen = new Set<string>();
@@ -138,12 +169,58 @@ export class GameView {
     for (const [id, a] of this.avatars) {
       if (seen.has(id)) continue;
       this.scene.remove(a.mesh);
-      (a.mesh.material as MeshLambertMaterial).dispose();
+      (a.mesh.material as ShaderMaterial).dispose();
       a.label.remove();
       this.avatars.delete(id);
     }
 
     this.renderer.render(this.scene, this.camera);
+
+    const i = this.perfI++ % PERF_FRAMES;
+    this.frameTimes[i] = now - this.lastFrame;
+    this.cpuTimes[i] = performance.now() - now;
+    this.lastFrame = now;
+  }
+
+  get perf(): PerfStats {
+    const n = Math.min(this.perfI, PERF_FRAMES);
+    const frames = Array.from(this.frameTimes.subarray(0, n)).sort((a, b) => a - b);
+    const cpu = this.cpuTimes.subarray(0, n);
+    const mean = (a: ArrayLike<number>) => {
+      let sum = 0;
+      for (let k = 0; k < n; k++) sum += a[k];
+      return n ? sum / n : 0;
+    };
+    const info = this.renderer.info;
+    return {
+      frameMs: mean(frames),
+      frameP95: frames[Math.floor(n * 0.95)] ?? 0,
+      cpuMs: mean(cpu),
+      cpuMax: n ? Math.max(...cpu) : 0,
+      drawCalls: info.render.calls,
+      triangles: info.render.triangles,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+      chunkBuilds: this.terrain.buildMs.count,
+      chunkBuildMax: this.terrain.buildMs.max,
+      pixelRatio: this.renderer.getPixelRatio(),
+    };
+  }
+
+  /**
+   * Render `frames` frames back to back, waiting for the GPU after each, and
+   * report the mean milliseconds per frame. Unlike the frame interval, this
+   * isn't capped by the display's refresh rate, so it shows headroom.
+   */
+  bench(frames = 60): number {
+    const gl = this.renderer.getContext();
+    const px = new Uint8Array(4);
+    const t0 = performance.now();
+    for (let i = 0; i < frames; i++) {
+      this.renderer.render(this.scene, this.camera);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    }
+    return (performance.now() - t0) / frames;
   }
 
   private avatar(p: Player): Avatar {
@@ -153,7 +230,7 @@ export class GameView {
       this.scene.remove(a.mesh);
       a.label.remove();
     }
-    const mat = new MeshLambertMaterial({ color: new Color().setHSL(p.info.hue / 360, 0.7, 0.55) });
+    const mat = solidMaterial(new Color().setHSL(p.info.hue / 360, 0.7, 0.55));
     const mesh = new Mesh(avatarGeo, mat);
     this.scene.add(mesh);
     const label = document.createElement('div');

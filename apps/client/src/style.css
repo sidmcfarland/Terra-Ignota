@@ -1,9 +1,11 @@
 :root {
-  --bg: #0e1a24;
-  --panel: rgba(14, 26, 36, 0.78);
-  --text: #e8eef2;
-  --muted: #9fb0bd;
-  --accent: #d8c690;
+  /* Parchment and sepia ink, from docs/ART_DIRECTION.md. */
+  --bg: #e8dcc0;
+  --panel: rgba(240, 231, 208, 0.86);
+  --text: #3a2e22;
+  --muted: #6e5f4b;
+  --accent: #3a2e22;
+  --edge: rgba(58, 46, 34, 0.28);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
@@ -11,17 +13,18 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 #game, #game canvas { position: fixed; inset: 0; display: block; }
 #hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left));
   background: var(--panel); border-radius: 8px; padding: 10px 12px; max-width: calc(100vw - 24px);
-  backdrop-filter: blur(4px); user-select: none; }
-#hud .title { font-weight: 700; letter-spacing: 0.04em; color: var(--accent); margin-bottom: 4px; }
+  backdrop-filter: blur(4px); user-select: none; border: 1px solid var(--edge); }
+#hud .title { font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; color: var(--accent); margin-bottom: 4px; }
 #status { color: var(--muted); white-space: pre; font-variant-numeric: tabular-nums; }
 #hud .buttons { display: flex; gap: 6px; margin-top: 8px; }
 #hud button { font: inherit; color: var(--bg); background: var(--accent); border: 0;
   border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-#hud #debugBtn, #hud #hostBtn { color: var(--text); background: rgba(232, 238, 242, 0.14); }
+#hud #debugBtn, #hud #hostBtn { color: var(--text); background: rgba(58, 46, 34, 0.1); }
 #hud #hostBtn[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
 #debug { position: fixed; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right));
   margin: 0; background: var(--panel); border-radius: 8px; padding: 10px 12px; max-width: calc(100vw - 24px);
   max-height: calc(100vh - 24px); overflow: auto; backdrop-filter: blur(4px); color: var(--text);
+  border: 1px solid var(--edge);
   font: 11px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
 #debug[hidden] { display: none; }
 /* Narrow screens: keep the debug panel clear of the HUD by docking it at the bottom. */
@@ -30,9 +33,9 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
     max-height: 40vh; font-size: 10px; }
 }
 .labels3d { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
-.labels3d div { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px; color: #fff;
-  text-shadow: 0 0 3px #000, 0 0 3px #000; }
+.labels3d div { position: absolute; left: 0; top: 0; white-space: nowrap; font-size: 12px; color: #fbf6e8;
+  text-shadow: 0 0 3px #2a2018, 0 0 3px #2a2018; }
 #stick { position: fixed; width: 96px; height: 96px; margin: -48px 0 0 -48px; border-radius: 50%;
-  border: 2px solid rgba(232, 238, 242, 0.35); display: none; pointer-events: none; }
+  border: 2px solid rgba(58, 46, 34, 0.4); display: none; pointer-events: none; }
 #knob { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
-  border-radius: 50%; background: rgba(232, 238, 242, 0.45); }
+  border-radius: 50%; background: rgba(58, 46, 34, 0.4); }

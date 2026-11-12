@@ -153,14 +153,20 @@ async function main() {
       status.textContent =
         `world ${cfg.world} · zone ${zone} ${zoneName(tiles.seed, zone)}\n${net}\n` +
         `${cfg.name} @ ${Math.floor(self.x)}, ${Math.floor(self.y)}\nQ / E rotate view · B paint · F3 debug`;
-      debug.render({ seed: tiles.seed, zone, self, peerId: cfg.peerId, name: cfg.name, session, edits, author: identity.pub });
+      debug.render({
+        seed: tiles.seed, zone, self, peerId: cfg.peerId, name: cfg.name, session, edits, author: identity.pub,
+        perf: draw ? view.perf : null,
+      });
     }
     requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
 
   // Test/debug hook.
-  (window as unknown as { __ti: unknown }).__ti = { cfg, self, session, tiles, edits, paint, author: identity.pub };
+  (window as unknown as { __ti: unknown }).__ti = {
+    cfg, self, session, tiles, edits, paint, author: identity.pub, view,
+    setZoom: (z: number) => (zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))),
+  };
 }
 
 void main();

@@ -47,44 +47,53 @@ Each entry is marked **Decided** (Sid agreed), **Proposed** (a starting point no
 Do not reproduce any existing game's characters, levels, art or specific look.
 
 ## Palette
-**The terrain colours below are what the renderer uses today. Treat them as the Proposed base; refine them into a deliberate palette and record the result here.**
+**Chosen in visual-foundation milestone 1 (2026-11-12); awaiting Sid's approval.** The code is `apps/client/src/render/look.ts` (lights, water, foliage, cartography) and the `GROUND` table in `terrain.ts`.
 
-| Tile | Hex | Notes |
+Each ground tile has **two tones**. Patches of land drift between them on a slow noise (about 13 tiles across), so no biome is a flat fill. The greens were pulled toward sage and olive and everything was warmed, so the land sits comfortably on parchment.
+
+| Tile | Deep tone | Sun-bleached tone | Notes |
+|---|---|---|---|
+| Deep water (seabed) | `#325264` | `#3A5C6A` | Seen through the water |
+| Water (seabed) | `#96A88E` | `#ACB290` | Sandy shallows |
+| Sand | `#D6C496` | `#E4D2A4` | |
+| Grass | `#709656` | `#92A860` | |
+| Forest floor | `#54764A` | `#64804C` | |
+| Meadow | `#9EB066` | `#BEBC70` | Golden, dry |
+| Rock | `#8C8276` | `#A09482` | Warm grey |
+| Snow | `#E8E8E4` | `#F4F0E6` | Warm white; its shadows turn blue from the sky fill |
+| Path (player-made) | `#B89C74` | | Drawn crisp, never blended |
+| Wall (player-made) | `#68625A` | | Drawn crisp, never blended |
+| Bare earth (steep green slopes) | `#9E8666` | | Faces too steep to hold grass |
+| Bare stone (steep rock and snow) | `#766C62` | | |
+
+| Other surfaces | Hex | Notes |
 |---|---|---|
-| Deep water | `#18304A` | |
-| Water (seabed tint) | `#3C7078` | |
-| Water surface | `#2F6A8F` | 78% opacity plane at sea level |
-| Sand | `#D8C690` | |
-| Grass | `#5C9A46` | |
-| Forest floor | `#487C3A` | |
-| Tree canopy | `#2F5E2C` | |
-| Meadow | `#8FB35A` | Scattered flowers: `#E6DC78`, `#EB96AA`, `#F0F0F0`, `#AA96E6` |
-| Rock | `#807C70` | |
-| Snow | `#ECF0F4` | |
-| Path (player-made) | `#A88C68` | |
-| Wall (player-made) | `#54524E` | |
+| Water, shallow | `#7FC0BD` | Blends to deep over 2.4 tiles of depth; 60–96% opaque |
+| Water, deep | `#2F6687` | |
+| Shore foam | `#F4EFE2` | A thin line that breathes in and out |
+| Tree canopy | `#3E6243` to `#6F9455` | Ramp from skirt to tip. Placeholder tree; the primary-biome milestone replaces it |
 
-| Light | Hex | Notes |
+| Light | Hex | Strength | Notes |
+|---|---|---|---|
+| Sun (key) | `#FFE6BE` | 1.2 | Warm. For now fixed at late afternoon, 30° up, from the west |
+| Sky fill | `#B3CDEC` | 0.66 | Cool, from above: shadows go blue, never black |
+| Ground bounce | `#9C8566` | 0.34 | Warm, from below |
+
+**Cartography colours** (the unknown world, the atlas and the UI):
+| Role | Hex | Status |
 |---|---|---|
-| Sun | `#FFF1DC` | Low, from the west-north-west |
-| Sky fill | `#CFE3FF` | Hemisphere light, sky side |
-| Ground bounce | `#3A2E22` | Hemisphere light, ground side |
-| Background | `#0E1A24` | To be replaced by parchment |
-
-**Proposed cartography colours** (for the unknown world, the atlas and the UI):
-| Role | Hex |
-|---|---|
-| Parchment | `#E8DCC0` |
-| Parchment shadow / fold | `#CDBE9A` |
-| Sepia ink | `#3A2E22` |
-| Faded ink | `#7A6A54` |
-| Vermilion accent (markers, the player's own things) | `#B5482E` |
-| Sea-chart blue wash | `#9DB8BC` |
+| Parchment | `#E8DCC0` | In use: the world's background and the HUD |
+| Sepia ink | `#3A2E22` | In use: the edge of the known world, the graticule, HUD text |
+| Parchment shadow / fold | `#CDBE9A` | Proposed, not used yet |
+| Faded ink | `#7A6A54` | Proposed, not used yet |
+| Vermilion accent (markers, the player's own things) | `#B5482E` | Proposed, not used yet |
+| Sea-chart blue wash | `#9DB8BC` | Proposed. Today the sea in the fringe is a wash of the seabed colour |
 
 **Rules:**
-- Per-tile brightness varies by a few percent from a seeded random, so ground never looks flat-filled.
+- Colours on the ground belong to facets (triangles), not tiles. A facet takes the average of its three corners, and each corner takes the average of the four tiles around it, so biomes meet in a band of in-between facets instead of a staircase of squares. Per-facet brightness varies by about ±4% from a seeded random.
+- What players build (Path, Wall, any edited tile) is drawn crisp, exactly on its tile. Nature is irregular; what people make is regular.
 - Player colours come from a hue the player picks. Keep them the most saturated things on screen so explorers read instantly.
-- Night, weather and seasons should shift the whole palette together (a grade or ramp), not recolour assets one by one.
+- Night, weather and seasons shift the whole palette together through the shared light colours and the grade (`uGrade` in `look.ts`), not by recolouring assets one by one.
 
 ## Asset types and formats
 **Decided at this level. No bulk asset production yet: see "Decisions".**
@@ -140,15 +149,22 @@ Do not reproduce any existing game's characters, levels, art or specific look.
 
 **Performance can't be measured on a real phone from a development session.** Use draw-call and triangle counts from `renderer.info`, frame times with CPU throttling, and say plainly that a real-device check is still owed.
 
-## Where the renderer is today
-As of M4b (2026-11-12). Update this section as the visual foundation lands.
+**How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles and chunk build times. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
 
-- `apps/client/src/render/view.ts`: orthographic isometric camera, one directional sun, one hemisphere light, flat background colour. Players are coloured capsules with HTML name labels.
-- `apps/client/src/render/terrain.ts`: heightmap chunks streamed around the camera. Each tile is two flat-shaded triangles with a vertex colour. Forest tiles get an instanced cone tree. Water is one translucent plane per chunk.
+## Where the renderer is today
+As of visual-foundation milestone 1 (2026-11-12). Update this section as the visual foundation lands.
+
+- `apps/client/src/render/look.ts`: **the look.** The palette, the shared uniforms (sun, sky fill, ground bounce, grade, time, the known-world circle) and the master shaders every surface uses: ground, foliage, water, parchment, solid (avatars). New surfaces should be built from these, not from Three.js's stock materials, so they take the same light, grade and ink-in.
+- **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
+- **Shadows and ambient occlusion are baked when a chunk is built.** Each vertex stores how high the land (and forest canopy) rises toward the morning sun and toward the evening sun. The shader compares that with the sun's elevation, so long soft shadows follow the time of day for one byte per vertex per direction. The sun's arc (`sunDirection` in `look.ts`) is already defined for the whole day; only late afternoon is used so far.
+- **The known world is a circle around the player** (44 tiles, `REVEAL_RADIUS`). Beyond it is blank parchment with a faint hand-ruled graticule every 64 tiles. In the 15-tile fringe the land is first a flat ink wash inside an inked outline, then rises as a pale paper relief, then takes its colour. This stands in for M5's explored area: M5 should replace `revealAt` in `look.ts` with a lookup of what has been explored.
+- `apps/client/src/render/terrain.ts`: heightmap chunks streamed around the player, only inside the known world. Tile corners are nudged off the grid and each tile is split along its flatter diagonal, so the land reads as hand-cut facets. Water is its own mesh, built only where there is water, on the same corners as the ground so the shoreline lines up; it is tinted by depth, faceted by its own ripples, glints in the sun and has a foam line that laps at the shore. Trees are still the placeholder cone, now lit, shaded and graded like everything else.
+- `apps/client/src/render/view.ts`: orthographic isometric camera, the parchment plane, avatars (capsules with HTML name labels) and the performance counters.
 - `apps/client/src/render/atlas.ts`: a top-down 2D chunk painter, kept for the shared atlas (M5). Not used in-game yet.
-- `apps/client/src/render/zones.ts`: debug-only zone border lines.
+- `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
 - Biomes come from worldgen's tiles: deep water, water, sand, grass, forest, meadow, rock, snow.
-- There is no fog of war, day/night, weather, wind, post-processing, audio or character model yet.
+- The HUD and debug panel are recoloured to parchment and sepia ink. Fonts and proper UI chrome are still to come.
+- There is no day/night cycle, weather, wind, audio or character model yet.
 
 ## Decisions
 | Date | Decision | Why |
@@ -161,6 +177,10 @@ As of M4b (2026-11-12). Update this section as the visual foundation lands.
 | 2026-11-12 | Build the visual foundation first: the parts that don't depend on mechanics | Lighting, shaders, biomes, time of day, weather and atmosphere define the look whatever the mechanics turn out to be. |
 | 2026-11-12 | Performance target: stable 60 fps on a mid-range phone from about three years ago | Sid's requirement. Quality is pushed as high as that allows, no higher. |
 | 2026-11-12 | Cohesion over variety; every asset is critiqued against this file before it's done | Sid's quality bar. |
+| 2026-11-12 | Lighting, shadows and grading are done in the materials' own shaders, with terrain shadows baked per vertex; no shadow maps or full-screen passes | It gives layered light and long soft shadows at almost no per-pixel cost, which is where phones run out. Awaiting Sid. |
+| 2026-11-12 | Ground colour belongs to hand-cut facets that blend across tile edges; player-made tiles stay crisp | It removes the grid-of-squares look while keeping what players build readable. Awaiting Sid. |
+| 2026-11-12 | The known world is a 44-tile circle on blank parchment until M5 supplies real exploration | It makes "a diorama on a parchment map" literal from the first frame, hides chunk streaming and cuts what has to be drawn. Awaiting Sid. |
+| 2026-11-12 | Screenshots and measurements use the world `vista` at fixed spots | Milestones stay comparable, and it keeps test sessions out of the default world. |
 
 ## Open questions
 - **Audio source:** synthesised in code only, or mixed with CC0 packs?
@@ -169,6 +189,56 @@ As of M4b (2026-11-12). Update this section as the visual foundation lands.
 - **M5 mechanics** (gathering, building, naming, the atlas, chat) aren't designed. The props, structures, resources, icons and sounds they need wait on that.
 
 ## Visual foundation backlog
-The session building the visual foundation owns this section. It records the ordered backlog, what's done, the measured performance and anything waiting for Sid's approval, so a later session can pick up from it.
+The session building the visual foundation owns this section. It records the ordered backlog, what's done, the measured performance and anything waiting for Sid's approval, so a later session can pick up from it. Work is on the branch `claude/visual-foundation-f5eaa1`, one commit per milestone, not pushed.
 
-*Not started.*
+### Order, and why
+The order is by how much each step decides the look of everything after it. Each step is built on the one before, so none of them has to be redone.
+
+| # | Milestone | Why here | Status |
+|---|---|---|---|
+| 1 | **Core look:** lighting model, grade, palette, master shaders, parchment and the ink-in edge, performance counters | Every later surface is built from these shaders and reads these uniforms. Getting them wrong means redoing everything. | **Done** |
+| 2 | **Primary biome, fully realised:** temperate coast and woodland (sand, grass, meadow, forest, shallows). Real trees, undergrowth, grass tufts, rocks, flowers, reeds and shore detail; grounded avatars | It is the quality benchmark. Every other biome is judged against it and reuses its pieces. | Next |
+| 3 | **Day/night cycle** and its key lighting arrangements (dawn, noon, golden hour, dusk, moonlit night) | The baked horizons and the grade were built for this in milestone 1. It has to come before weather, which bends the same lights. | |
+| 4 | **Wind** and foliage sway, plus foliage detail | Needs the foliage from 2. Wind is one shared field that weather (5) then drives. | |
+| 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | |
+| 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | |
+| 7 | **More biomes** and the transitions between them | Reuses everything above. See the finding below: worldgen has one climate today. | |
+| 8 | **Finishing:** variations, extra effects, loose ends from the list below | Polish last. | |
+
+### Kept for later (found along the way)
+- **Chunk generation belongs in a worker.** Generating a chunk's tiles and heights and building its mesh takes about 3–5 ms here on a desktop, so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame now, which is better than before but not a fix. `packages/shared` is isomorphic, so it can run in a worker unchanged.
+- **Pixel ratio on phones.** Still capped at 2. Try 1.5, or scale it by measured frame time.
+- **Avatars** are still capsules, with no contact shadow. Characters wait for M5, but a grounded placeholder comes with milestone 2.
+- **Zone debug lines** float over the flattened fringe.
+- **A trail of explored land** that stays inked-in for the session would show the idea better than a moving circle. It overlaps M5's fog of war, so it needs Sid's say-so.
+
+### Findings for Sid
+- **Worldgen has one climate.** `tileAt` makes eight tiles from elevation and moisture, the same everywhere. "Additional biomes" (milestone 7) can be done two ways: client-only variation of the existing tiles by region (for example birch against pine, heath against meadow, chosen from a large-scale noise), which changes no world and no rule; or new tiles and a temperature map in `packages/shared`, which changes every existing world. The first is in scope; the second needs a decision.
+- **The shadow of a forest stays after a player paves it.** Shadows are baked from the generated tiles, not the edited ones, so that a chunk and its neighbours always agree at their seam. It's a soft shade and hard to notice.
+- **`.claude/launch.json` gained a `client-visual` entry** (the client on port 5174) so this worktree can run beside the main checkout.
+
+### Measured performance
+After milestone 1, on the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+
+| Measure | Coast (`at=-444,-516`) | Hills and forest (`at=744,612`) | Mountain (`at=816,48`) | Budget |
+|---|---|---|---|---|
+| Draw calls | 41 | 30–33 | 19 | 150 |
+| Triangles | 61k | 67–72k | 32k | 300k |
+| GPU + CPU per frame, 1024×768 | | 2.2 ms | | 12 ms (on the phone) |
+| The same at 2048×1536 | | 3.7 ms | | |
+| Main thread per frame, steady | | 0.8 ms | | |
+| Chunk build, warm | | 2.7–3.6 ms (the first is 15–20 ms while the code warms up) | | No dropped frame |
+| Textures | 1 (a 128×128 grain, 16 KB) | | | 32 MB |
+| Full-screen passes, shadow maps | 0 | | | 1 / 1 |
+
+Draw calls and triangles were not recorded before milestone 1, so there is no before-and-after for them.
+
+### Fixed spots for screenshots
+World `vista`: `#w=vista&at=-444,-516` (coast, lake and forest), `#w=vista&at=744,612` (hills, forest edge, pond), `#w=vista&at=816,48` (mountain with snow). Zoom out fully to see the diorama on its map.
+
+### Waiting for Sid
+1. **The refined palette** (above): sage and olive greens, warm stone, teal water. Approve or steer.
+2. **Facets that blend across tile edges, and corners nudged off the grid.** Tiles are no longer visible as squares, except what players build. A wall's edge can sit up to 0.16 of a tile from where collision puts it.
+3. **The known world as a circle on parchment**, with the flat-wash, paper-relief, colour sequence at its edge and a faint graticule on the blank map.
+4. **Late-afternoon light from the west** as the default until the day/night cycle lands.
+5. **HUD recoloured** to parchment and ink. It's a recolour only; real UI design is out of scope here.
