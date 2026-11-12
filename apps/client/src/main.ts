@@ -11,6 +11,7 @@ import { Session } from './net/session.ts';
 import { Store } from './net/store.ts';
 import { parseTime } from './render/day.ts';
 import { GameView, type Player } from './render/view.ts';
+import { parseSeason } from './render/weather.ts';
 import { parseWind } from './render/wind.ts';
 
 const MIN_ZOOM = 8, MAX_ZOOM = 48;
@@ -37,6 +38,9 @@ async function main() {
   view.setHour(parseTime(new URLSearchParams(location.hash.slice(1)).get('time')));
   // `#wind=0.8` holds the wind at a strength (0 to 1); without it the wind wanders with the clock.
   view.setWind(parseWind(new URLSearchParams(location.hash.slice(1)).get('wind')));
+  // `#weather=rain` and `#season=autumn` hold the sky and the year in the same way.
+  view.setWeather(new URLSearchParams(location.hash.slice(1)).get('weather'));
+  view.setSeason(parseSeason(new URLSearchParams(location.hash.slice(1)).get('season')));
   document.getElementById('game')!.appendChild(view.canvas);
 
   // Spawn at the invite spot if walkable, else the world spawn; jitter so
@@ -164,6 +168,8 @@ async function main() {
         perf: draw ? view.perf : null,
         hour: draw ? view.hour : null,
         wind: draw ? view.wind.strength : null,
+        weather: draw ? view.weather : null,
+        season: draw ? view.season : null,
       });
     }
     requestAnimationFrame(loop);

@@ -146,6 +146,35 @@ The colours of the light change through the day. They are in "Time of day" below
 - **`#wind=0.8`** holds the wind at a strength from the prevailing direction; `window.__ti.view.setWind(s)` does the same and `setWind(null)` returns to the clock. The debug panel shows the strength.
 - **Tree crowns thin out where they would hide you.** Crowns standing between your explorer and the eye are drawn as a faint scatter of their own pixels, so you can see yourself among the trunks. There is no blending and no sorting.
 
+## Weather and seasons
+**Chosen in visual-foundation milestone 5 (2026-11-12); awaiting Sid's approval.** The code is `apps/client/src/render/weather.ts` (the sky and the year, from the clock), the `Look` class in `look.ts` (which bends the lights, wind and mist by them), the season and snow code in the ground and foliage shaders, and `precip.ts` (rain and snow in the air).
+
+**Weather is five amounts, not a list of states:** cloud, rain, snow, fog and storm, each from 0 to 1. They rise and fall on slow tides read from the wall clock, so weather drifts in over minutes and never switches, and every explorer sees the same sky with nothing sent. Fair weather is the rule: cloudy about a quarter of the time, raining about a seventh, a storm about one minute in twenty, mist about a tenth.
+
+| Weather | What it does |
+|---|---|
+| Cloud | The sun goes in (its light falls by up to four-fifths), the sky fill greys and brightens to take its place, shadows soften, colour drains by a fifth, and the glint leaves the water. Open ground is about a seventh darker. |
+| Rain | Thin, slanted streaks in the air, bent by the wind. The land darkens by a fifth as it gets wet, the water is pocked with small bright rings, a light haze settles, and the wind picks up. |
+| Storm | Rain at its heaviest, more wind, darker still, and **distant lightning**: now and then a double flicker that lifts the whole picture for under half a second. There are no bolts and nothing strikes: this is weather, not a threat. |
+| Fog | Mist lies in the low ground and over water, thins with height and drifts on the wind, so hilltops and high forest stand clear of it. It takes the colour of the light, so it is rose at dawn and slate at night. Mist needs still air, so the wind drops. |
+| Snow | Rain becomes snow as winter comes on: small, slow flakes that wander. Snow on the ground deepens while it falls. |
+
+**The year** has four seasons of 4 real hours each (five of the game's days), so a year is 16 hours and the season at a given time of day changes from one real day to the next. A season holds for two-thirds of its span and then gives way to the next.
+
+| Season | What changes |
+|---|---|
+| Spring | Greens are fresher and a little yellower; broadleaf crowns are a lighter green. Colour is up 5%. |
+| Summer | The reference. Everything in milestones 1 to 4 is summer. |
+| Autumn | Broadleaves turn ochre `#BC9B50` to russet `#9B6945`, each tree in its own week and none completely, so a wood is a mix of green, gold and brown. Grass goes olive-gold. The sun is a little more golden. |
+| Winter | Snow lies in drifts on whatever faces the sky: ground, stones, pine boughs, the tops of bare crowns. Grass under it is straw. Broadleaves are bare: a thinner, twig-coloured crown. Pines keep their needles. Colour is down 10% and the sun is paler. |
+
+- **Autumn has no red.** The palette stops at russet, for the same reason no flower is red: vermilion is kept for the player's own marks.
+- **Pines never change** except to carry snow. A stand of pine is where the green is in winter.
+- **Snow is a rule in the shader, not new geometry.** Each surface whitens by how far it faces the sky and by a slow drift pattern, so cover comes and goes in patches as the amount changes. Nothing is rebuilt.
+- **The seasons recolour by rule too:** anything green shifts, and sand, rock and what players build do not.
+- **Rain and snow are one mesh** of 480 small quads that fall through a box around the explorer and wrap. The vertex shader places every one. Nothing falls on the blank map: weather belongs to the land.
+- **`#weather=clear|overcast|rain|storm|fog|snow`** and **`#season=spring|summer|autumn|winter`** (or a point in the year from 0 to 4) hold them still. `window.__ti.view.setWeather(name)` and `setSeason(year)` do the same; pass `null` to return to the clock. The debug panel shows both.
+
 ## Asset types and formats
 **Decided at this level. No bulk asset production yet: see "Decisions".**
 
@@ -203,9 +232,10 @@ The colours of the light change through the day. They are in "Time of day" below
 **How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles and chunk build times. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
 
 ## Where the renderer is today
-As of visual-foundation milestone 4 (2026-11-12). Update this section as the visual foundation lands.
+As of visual-foundation milestone 5 (2026-11-12). Update this section as the visual foundation lands.
 
 - `apps/client/src/render/look.ts`: **the look.** The palette, the shared uniforms (key light, sky fill, ground bounce, lanterns, the light on the parchment, grade, time, the known-world circle) and the master shaders every surface uses: ground, foliage (trees and ground cover), water, parchment, solid (avatars) and the soft blob shadow. New surfaces should be built from these, not from Three.js's stock materials, so they take the same light, lanterns, grade and ink-in.
+- `apps/client/src/render/weather.ts`: **the weather and the seasons** (milestone 5), as plain numbers with unit tests. `apps/client/src/render/precip.ts` is the rain and snow in the air: one mesh, one draw call. See "Weather and seasons".
 - `apps/client/src/render/wind.ts`: **the wind** (milestone 4). Direction and strength from the wall clock, as plain numbers with unit tests. The field itself (`windAt`) is in `look.ts`'s shared vertex code. See "Wind".
 - `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day".
 - **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
@@ -221,7 +251,7 @@ As of visual-foundation milestone 4 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
 - Biomes come from worldgen's tiles: deep water, water, sand, grass, forest, meadow, rock, snow.
 - The HUD and debug panel are recoloured to parchment and sepia ink. Fonts and proper UI chrome are still to come.
-- There is no weather, audio or character model yet.
+- There is no audio or character model yet.
 
 ## Decisions
 | Date | Decision | Why |
@@ -247,6 +277,9 @@ As of visual-foundation milestone 4 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Each arrangement sets how bright open ground is, and the lights are scaled to meet it | Brightness is authored directly, so no hour is blown out or murky, and weather can later change the mix of lights without changing the exposure. Awaiting Sid. |
 | 2026-11-12 | The wind is one field, read from the wall clock, that every growing thing and the water sample | A gust that crosses grass, trees and water in turn makes the land feel like one place. It costs a few sines per vertex and no extra draw calls. Awaiting Sid. |
 | 2026-11-12 | Crowns that would hide your explorer are thinned with a dither, not blended | Blending needs sorting and a second pass; a scatter of discarded pixels is free and reads as a soft cutaway. Awaiting Sid. |
+| 2026-11-12 | Weather is five amounts on slow tides from the wall clock, not a set of states | It drifts in and out instead of switching, mixes freely (thin cloud, mist with drizzle), and needs no network. Awaiting Sid. |
+| 2026-11-12 | Seasons, snow cover and wet ground are rules in the shaders, driven by four numbers | Nothing is rebuilt or re-uploaded when the year turns, so a season costs a few multiplications per vertex. Awaiting Sid. |
+| 2026-11-12 | A storm is distant lightning and harder rain, with no bolts or strikes | The art direction rules out anything that suggests threat. Awaiting Sid. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Awaiting Sid. |
 
@@ -268,8 +301,8 @@ The order is by how much each step decides the look of everything after it. Each
 | 2 | **Primary biome, fully realised:** temperate coast and woodland (sand, grass, meadow, forest, shallows). Real trees, undergrowth, grass tufts, rocks, flowers, reeds and shore detail; grounded avatars | It is the quality benchmark. Every other biome is judged against it and reuses its pieces. | **Done** |
 | 3 | **Day/night cycle** and its key lighting arrangements (dawn, noon, golden hour, dusk, moonlit night) | The baked horizons and the grade were built for this in milestone 1. It has to come before weather, which bends the same lights. | **Done** |
 | 4 | **Wind** and foliage sway, plus foliage detail | Needs the foliage from 2. Wind is one shared field that weather (5) then drives. | **Done** |
-| 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | Next |
-| 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | |
+| 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
+| 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | Next |
 | 7 | **More biomes** and the transitions between them | Reuses everything above. See the finding below: worldgen has one climate today. | **On hold** until M4c is merged (Sid, 2026-11-12) |
 | 8 | **Finishing:** variations, extra effects, loose ends from the list below | Polish last. | |
 
@@ -280,6 +313,12 @@ The order is by how much each step decides the look of everything after it. Each
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
 - **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), but only for your own explorer: others still disappear under the canopy.
 - **The wind is computed for every plant even when zoomed out,** where the sway is smaller than a pixel. If a phone's vertex load is too high, fade the sway out below about 12 pixels a tile and keep only the sheen.
+- **Water does not freeze** in winter, and rain makes no splash on the ground.
+- **A bare tree is a thinner, twig-coloured crown,** not branches. It reads at the game's scale; a real winter model would be better up close.
+- **Flowers bloom all year** except under snow. Tying each kind to its season needs a flag on the vertex.
+- **The season rule finds green by colour,** so the golden meadow does not turn. A per-vertex "this grows" flag would be exact.
+- **Rain is not stopped by tree crowns or hills:** a streak can be seen falling through a canopy.
+- **Lanterns do not come on in a dark storm by day.**
 - **The thinned crowns are a visible dot pattern** on a low-density screen. It is finer on a phone. A blue-noise pattern would look softer.
 - **No level of detail.** Fully zoomed out, every tuft is still drawn (about 100–130k triangles). It is within budget; if a phone struggles, drop ground cover when zoomed out first.
 - **Zone debug lines** float over the flattened fringe.
@@ -301,6 +340,8 @@ The order is by how much each step decides the look of everything after it. Each
 
 ### Measured performance
 On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+
+**After milestone 5** rain or snow adds one draw call and 960 triangles (480 quads, inside the 500-particle budget); fog, seasons and snow cover add none. No textures or passes were added. At the hills spot, fully zoomed out (146k triangles, 66–67 draw calls), a frame took 2.5–2.8 ms in clear weather, rain, storm, fog, snow, autumn and winter alike, the same as milestone 4. The ground and foliage vertex shaders are longer (season, snow and mist are a few dozen operations and four sines a vertex), which a desktop does not show and a phone might. A first run of these measurements read 3 to 6 ms while another session was using the machine; it was discarded and repeated.
 
 **After milestone 4** the wind added no draw calls, triangles, textures or passes. It adds vertex work: about six sines for each foliage vertex and two for each water vertex. At the hills spot, fully zoomed out (140k triangles, 77 draw calls in that run), a frame took 2.65–2.9 ms, against 2.5–2.65 ms in milestone 3's run. That difference is inside this machine's run-to-run drift, so the cost here is at most about 0.2 ms. A phone's cost is unknown. Calm and breezy cost the same (the shader does the same work either way).
 
@@ -342,3 +383,9 @@ World `vista`: `#w=vista&at=-444,-516` (coast, lake and forest), `#w=vista&at=74
 13. **Every explorer carries a lantern** after sundown: a warm pool of light, which also makes other explorers visible from afar.
 14. **A wind that is never still and never rough in fair weather** (0.12 to 0.7), read from the wall clock, with gusts that cross grass, trees and water in turn.
 15. **Tree crowns thin to a scatter of pixels where they would hide your explorer.**
+16. **Weather from the wall clock, mostly fair:** cloudy about a quarter of the time, rain about a seventh, storms rare, mist about a tenth. Are those the right odds?
+17. **A 16-hour year** (4 real hours a season), so the season is different at the same time on different days. This means the game can open in winter. Is that the right length, and should a new player's first visit be held to summer?
+18. **Autumn in ochre and russet, with no red,** and each tree turning in its own time.
+19. **Winter as snow in drifts, bare broadleaves and green pines.**
+20. **Storms are distant lightning only:** no bolts, nothing strikes.
+21. **Mist lies in the low ground and leaves the hilltops clear,** instead of veiling the whole picture.

@@ -14,7 +14,9 @@ import {
 } from 'three';
 import type { PlayerInfo, TileCache } from '@terra/shared';
 import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
+import { Precipitation } from './precip.ts';
 import { Terrain, WATER_Y } from './terrain.ts';
+import { WEATHERS, type Season, type Weather } from './weather.ts';
 import { ZoneLines } from './zones.ts';
 
 export interface Player {
@@ -121,6 +123,7 @@ export class GameView {
   private paper = new Mesh(new PlaneGeometry(1, 1).rotateX(-Math.PI / 2), paperMaterial());
   private terrain: Terrain;
   private zoneLines: ZoneLines;
+  private precip = new Precipitation();
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -151,6 +154,7 @@ export class GameView {
     this.paper.renderOrder = 1;
     this.paper.frustumCulled = false;
     this.scene.add(this.paper);
+    this.scene.add(this.precip.mesh);
 
     this.labels.className = 'labels3d';
     document.body.appendChild(this.labels);
@@ -188,6 +192,25 @@ export class GameView {
   /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
   setWind(strength: number | null) {
     this.look.fixedWind = strength;
+  }
+
+  /** The weather and the season being shown. */
+  get weather(): Weather {
+    return this.look.weather;
+  }
+
+  get season(): Season {
+    return this.look.season;
+  }
+
+  /** Hold the weather (a name from WEATHERS, such as 'rain'), or pass null to follow the shared clock again. */
+  setWeather(name: string | null) {
+    this.look.fixedWeather = name !== null && Object.hasOwn(WEATHERS, name) ? WEATHERS[name] : null;
+  }
+
+  /** Hold the point in the year (0 spring, 1 summer, 2 autumn, 3 winter, and between), or pass null to follow the clock. */
+  setSeason(year: number | null) {
+    this.look.fixedYear = year;
   }
 
   /** Draw zone borders and handoff margins on the ground (debug mode). */
@@ -234,6 +257,7 @@ export class GameView {
     this.paper.position.set(target.x, PAPER_Y, target.z);
     this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
+    this.precip.update(this.look.weather, this.look.wind, groundY, radius, dt);
 
     const seen = new Set<string>();
     const v = new Vector3();

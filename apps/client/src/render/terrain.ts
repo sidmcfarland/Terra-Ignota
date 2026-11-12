@@ -67,7 +67,9 @@ const STEPS = [1, 1.75, 2.5, 3.5, 5, 7, 10, 14, 18.5, 23];
 
 const groundMat = groundMaterial();
 const waterMat = waterMaterial();
-const treeMat = foliageMaterial(LIFT_UNIT);
+// Broadleaves follow the seasons; pines keep their needles.
+const leafMat = foliageMaterial(LIFT_UNIT, false, true);
+const pineMat = foliageMaterial(LIFT_UNIT);
 // Blades are single triangles seen from both sides.
 const coverMat = foliageMaterial(LIFT_UNIT, true);
 
@@ -665,7 +667,7 @@ export class Terrain {
     for (const [geo, spots] of [[TREES.broadleaf, leafSpots], [TREES.conifer, pineSpots]] as const) {
       const count = spots.length / 6;
       if (!count) continue;
-      const mesh = new InstancedMesh(geo, treeMat, count);
+      const mesh = new InstancedMesh(geo, geo === TREES.broadleaf ? leafMat : pineMat, count);
       // Per tree: how shaded its spot is, measured from mid-canopy over bare ground (not its own forest).
       const shades = new Float32Array(count * 3);
       for (let i = 0; i < count; i++) {

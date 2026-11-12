@@ -15,6 +15,7 @@ import {
 } from 'three';
 import { rand2 } from '@terra/shared';
 import { hourAt, keyBody, lightAt, luminance, makeLight } from './day.ts';
+import { flashAt, seasonAt, weatherAt, yearAt, type Season, type Weather } from './weather.ts';
 import { steadyWind, windAt, type Wind } from './wind.ts';
 
 /**
@@ -57,6 +58,8 @@ export const LAMP_HEIGHT = 0.8;
 const DAY_LEVEL = 0.88;
 /** How far the light on the parchment is pulled toward grey. */
 const PAPER_GREY = 0.5;
+/** What distant lightning adds to the sky fill: a cool white. */
+const FLASH = [0.3, 0.35, 0.5];
 
 // The sun travels a tilted arc: it rises east-south-east, leans south at midday and sets west-north-west.
 // The moon follows the same arc twelve hours behind it.
@@ -147,6 +150,14 @@ export const U = {
   uGlint: { value: 1 },
   /** The wind. xy: the direction it blows toward (world x, z); z: strength, 0–1; w: how far its gusts have travelled (a phase). */
   uWind: { value: new Vector4(1, 0, 0, 0) },
+  /** Mist. rgb: its colour in this light; a: how thick it lies in the low ground, 0–1. */
+  uFog: { value: new Vector4(1, 1, 1, 0) },
+  /** x: the height below which mist is thickest; y: the height at which it has thinned to nothing; z: the water level. */
+  uFogBand: { value: new Vector3(0.3, 6, 0) },
+  /** The year. x: spring; y: autumn; z: winter (each 0–1); w: how much snow lies, 0–1. */
+  uSeason: { value: new Vector4(0, 0, 0, 0) },
+  /** How hard it is raining, 0–1: the land is darker when wet, and the water is pocked. */
+  uRain: { value: 0 },
   uTime: { value: 0 },
   uGrain: { value: null as DataTexture | null },
 } satisfies Record<string, IUniform>;
@@ -168,6 +179,10 @@ uniform vec4 uLamps[${LAMPS}];
 uniform vec3 uLampColor;
 uniform float uGlint;
 uniform vec4 uWind;
+uniform vec4 uFog;
+uniform vec3 uFogBand;
+uniform vec4 uSeason;
+uniform float uRain;
 uniform float uTime;
 `;
 
@@ -202,6 +217,27 @@ vec2 windAt(vec2 p) {
   float gust = 0.5 + 0.5 * sin(along * 0.2 - uWind.w + 1.6 * sin(across * 0.07 + uWind.w * 0.11));
   float flutter = sin(along * 1.9 + across * 1.3 - uWind.w * 5.3);
   return vec2(uWind.z * (0.3 + 0.7 * gust), flutter);
+}
+// Mist lies in the low ground, thins with height and drifts on the wind. Hilltops stand clear of it.
+float fogAt(vec3 p) {
+  float drift = 0.8 + 0.2 * sin(p.x * 0.13 + p.z * 0.09 - uWind.w * 0.35);
+  return uFog.a * drift * (1.0 - smoothstep(uFogBand.x, uFogBand.y, p.y));
+}
+// The turning year on anything green: fresher in spring, gold in autumn, straw in winter. Rain darkens the land.
+vec3 seasonOn(vec3 albedo) {
+  float green = clamp((albedo.g - max(albedo.r, albedo.b)) * 6.0, 0.0, 1.0);
+  albedo *= mix(vec3(1.0), vec3(0.93, 1.07, 0.9), green * uSeason.x);
+  albedo = mix(albedo, albedo * vec3(1.5, 1.02, 0.62), green * uSeason.y * 0.75);
+  float l = dot(albedo, vec3(0.2126, 0.7152, 0.0722));
+  albedo = mix(albedo, l * vec3(1.3, 1.08, 0.72), green * uSeason.z * 0.7);
+  return albedo * (1.0 - 0.2 * uRain);
+}
+// Snow settles in drifts on whatever faces the sky (up is the surface normal's y), but not under water.
+vec3 snowOn(vec3 albedo, vec3 p, float up) {
+  float drift = 0.5 + 0.25 * (sin(p.x * 0.37 + p.z * 0.23) + sin(p.z * 0.41 - p.x * 0.19 + 1.7));
+  float cover = smoothstep(drift - 0.25, drift + 0.25, uSeason.w * 1.5) * smoothstep(0.0, 0.15, uSeason.w)
+    * smoothstep(0.45, 0.85, up) * step(uFogBand.z + 0.02, p.y);
+  return mix(albedo, vec3(0.8, 0.85, 0.93), cover);
 }
 // Lantern light on a point: a warm pool around each explorer after dark, wrapped so level ground still catches it.
 vec3 lampOn(vec3 p, vec3 n) {
@@ -282,9 +318,9 @@ void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float reveal = revealAt(world.xz);
   world.y = mix(-0.03, world.y, riseOf(reveal));
-  vec3 albedo = toLinear(aColor);
+  vec3 albedo = snowOn(seasonOn(toLinear(aColor)), vec3(world.x, position.y, world.z), normal.y);
   vec3 light = lightOn(normal, aShade.x, bakedShadow(aShade)) + lampOn(world.xyz, normal) * aShade.x;
-  vLit = albedo * light;
+  vLit = mix(albedo * light, uFog.rgb, fogAt(world.xyz));
   vForm = dot(light, vec3(0.3333));
   vWash = mix(vec3(1.0), albedo / uParchment, 0.42);
   vReveal = reveal;
@@ -310,8 +346,9 @@ void main() {
  * Trees carry their baked shade per instance in `instanceColor` (ambient
  * occlusion, morning horizon, evening horizon); ground cover carries it per
  * vertex in `aShade`. Both grow out of the map at the edge of the known world.
+ * `leafy` marks a broadleaf tree, which follows the seasons; a pine does not.
  */
-export function foliageMaterial(lift: number, doubleSided = false): ShaderMaterial {
+export function foliageMaterial(lift: number, doubleSided = false, leafy = false): ShaderMaterial {
   const m = material(
     VERT_COMMON + /* glsl */ `
 attribute vec4 aColor;
@@ -356,7 +393,22 @@ void main() {
   vec2 rel = root.xz - uFocus - toEye * 1.7;
   float hide = length(vec2(dot(rel, toEye) / 2.6, dot(rel, vec2(-toEye.y, toEye.x)) / 1.3));
   vFade = mix(1.0, 0.18 + 0.82 * smoothstep(0.55, 1.0, hide), smoothstep(0.25, 0.45, position.y));
+#ifdef LEAFY
+  // Broadleaves follow the year: fresh in spring, turning gold or rust in autumn (each tree in its own week),
+  // and bare in winter, drawn as a thinner, twig-coloured crown.
+  float crown = smoothstep(0.3, 0.5, position.y);
+  float ramp = clamp(dot(albedo, vec3(0.2126, 0.7152, 0.0722)) * 5.0, 0.5, 1.7);
+  albedo *= mix(vec3(1.0), vec3(1.04, 1.13, 0.8), uSeason.x * crown);
+  float late = fract(h * 7.31) * 0.5;
+  albedo = mix(albedo, mix(vec3(0.5, 0.33, 0.08), vec3(0.33, 0.14, 0.06), h * h) * ramp,
+    smoothstep(late, late + 0.5, uSeason.y) * crown * (0.55 + 0.4 * fract(h * 3.7)));
+  float bare = uSeason.z * crown;
+  albedo = mix(albedo, vec3(0.2, 0.135, 0.085) * ramp, bare * 0.85);
+  local.xz = mix(local.xz, origin.xz + (local.xz - origin.xz) * 0.5, bare);
+#endif
+  albedo = snowOn(albedo, root.xyz, n.y);
 #else
+  albedo = snowOn(seasonOn(albedo), root.xyz, n.y);
   // Grass and leaves are supple: the tip goes with every gust, and bent grass shows its paler side.
   float tall = aColor.a * ${lift.toFixed(2)};
   float bend = tall * wind.x * (1.0 + 0.35 * wind.y);
@@ -368,7 +420,7 @@ void main() {
   vec4 world = modelMatrix * vec4(origin + (local - origin + lean) * grow, 1.0);
   world.y = mix(-0.03, world.y, rise);
   vec3 light = lightOn(n, shade.x, bakedShadow(shade)) + lampOn(world.xyz, n) * shade.x;
-  vLit = mix(uParchment * uPaperLight * 0.8, albedo * light, grow);
+  vLit = mix(uParchment * uPaperLight * 0.8, mix(albedo * light, uFog.rgb, fogAt(world.xyz)), grow);
   vReveal = reveal;
   vMap = world.xz;
   gl_Position = projectionMatrix * viewMatrix * world;
@@ -387,6 +439,7 @@ void main() {
 }`,
   );
   if (doubleSided) m.side = DoubleSide;
+  if (leafy) m.defines = { LEAFY: '' };
   return m;
 }
 
@@ -402,12 +455,14 @@ varying float vShadow;
 varying float vRise;
 varying vec3 vLamp;
 varying float vGust;
+varying float vFog;
 void main() {
   vec4 world = modelMatrix * vec4(position, 1.0);
   float rise = riseOf(revealAt(world.xz));
   // Ripples grow with depth so they never cut into the shoreline, and with the wind.
   float swell = 0.05 * smoothstep(0.05, 1.2, aDepth) * rise * (0.7 + 0.9 * uWind.z);
   vGust = windAt(world.xz).x;
+  vFog = fogAt(world.xyz);
   world.y += swell * (sin(world.x * 0.9 + uTime * 1.1) + sin(world.z * 1.3 - uTime * 0.8 + world.x * 0.4));
   vWorld = world.xyz;
   vDepth = aDepth;
@@ -426,6 +481,7 @@ varying float vShadow;
 varying float vRise;
 varying vec3 vLamp;
 varying float vGust;
+varying float vFog;
 void main() {
   // Face normal from screen-space derivatives: each ripple facet catches the light on its own.
   vec3 n = cross(dFdx(vWorld), dFdy(vWorld));
@@ -442,7 +498,12 @@ void main() {
   float foam = 1.0 - smoothstep(lap * 0.5, lap, vDepth);
   col = mix(col, uFoam * (light * 0.9), foam * 0.8);
   alpha = max(alpha, foam * 0.75);
+  // Rain pocks the surface: a scatter of small bright rings, each gone in a moment.
+  vec2 cell = vWorld.xz * 3.3 + 0.37 * vWorld.zx, in_ = fract(cell) - 0.5;
+  float drop = fract(sin(dot(floor(cell) + floor(uTime * 7.0) * 17.0, vec2(12.9898, 78.233))) * 43758.5453);
+  col += uSkyColor * (0.4 * uRain * step(0.965, drop) * (1.0 - smoothstep(0.15, 0.4, length(in_))));
   col *= 0.95 + 0.1 * toothAt(vWorld.xz);
+  col = mix(col, uFog.rgb, vFog);
   gl_FragColor = vec4(grade(col), alpha * vRise);
   ${FRAG_END}
 }`,
@@ -492,6 +553,7 @@ void main() {
   vec3 n = normalize(mat3(modelMatrix) * normal);
   vec4 world = modelMatrix * vec4(position, 1.0);
   vLit = uColor * aTone * (lightOn(n, uShade.x, bakedShadow(uShade)) + lampOn(world.xyz, n));
+  vLit = mix(vLit, uFog.rgb, fogAt(world.xyz) * 0.6);
   gl_Position = projectionMatrix * viewMatrix * world;
 }`,
     FRAG_COMMON + /* glsl */ `
@@ -535,6 +597,51 @@ void main() {
   return m;
 }
 
+/**
+ * Rain and snow (see precip.ts). Each quad carries where it sits in the box (`aSeed.xyz`) and its rank
+ * (`aSeed.w`): in light rain only the low ranks fall. Nothing falls on the blank map.
+ * fall: xyz the direction of fall, w how much is falling (0–1). shape: x streak length, y half width,
+ * z opacity, w sideways wander. box: xyz its size, w the height of its floor. drift: xyz how far
+ * everything has fallen so far (wrapped), w brightness.
+ */
+export function precipMaterial(fall: Vector4, shape: Vector4, box: Vector4, drift: Vector4): ShaderMaterial {
+  const m = material(
+    VERT_COMMON + /* glsl */ `
+attribute vec4 aSeed;
+uniform vec4 uFall;
+uniform vec4 uShape;
+uniform vec4 uBox;
+uniform vec4 uDrift;
+varying float vAlpha;
+void main() {
+  vec3 centre = vec3(uFocus.x, uBox.w + uBox.y * 0.5, uFocus.y);
+  vec3 p = aSeed.xyz * uBox.xyz + uDrift.xyz;
+  p.xz += uShape.w * vec2(sin(uTime * 1.3 + aSeed.x * 40.0), cos(uTime * 1.1 + aSeed.z * 40.0));
+  // Wrap around the explorer, so the same drops stay put in the world as the explorer walks.
+  p = mod(p - centre, uBox.xyz) - 0.5 * uBox.xyz + centre;
+  vec3 side = normalize(cross(uFall.xyz, uViewDir));
+  vec3 world = p - uFall.xyz * (uv.y * uShape.x) + side * ((uv.x - 0.5) * 2.0 * uShape.y);
+  float shown = step(aSeed.w, uFall.w) * smoothstep(0.55, 0.9, revealAt(p.xz));
+  // A streak fades toward its tail.
+  vAlpha = uShape.z * shown * (1.0 - 0.85 * uv.y);
+  gl_Position = shown > 0.0 ? projectionMatrix * viewMatrix * vec4(world, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);
+}`,
+    FRAG_COMMON + /* glsl */ `
+uniform vec4 uDrift;
+varying float vAlpha;
+void main() {
+  gl_FragColor = vec4(grade((uSkyColor * 1.5 + uSunColor * 0.3) * uDrift.w), vAlpha);
+  ${FRAG_END}
+}`,
+    { uFall: { value: fall }, uShape: { value: shape }, uBox: { value: box }, uDrift: { value: drift } },
+  );
+  m.transparent = true;
+  m.depthWrite = false;
+  // A streak turns with the wind and the view, so either face may be toward the eye.
+  m.side = DoubleSide;
+  return m;
+}
+
 /** Sets the shared uniforms each frame from the time of day (see day.ts). */
 export class Look {
   /** Pin the time of day (hours, 0–24), or null to follow the shared clock. */
@@ -550,6 +657,12 @@ export class Look {
   /** Hold the wind at this strength (0–1), or null to follow the shared clock. */
   fixedWind: number | null = null;
   readonly wind: Wind = { x: 1, y: 0, strength: 0 };
+  /** Hold the weather (one of WEATHERS), or null to follow the shared clock. */
+  fixedWeather: Weather | null = null;
+  /** Hold the point in the year (0–4, see weather.ts), or null to follow the shared clock. */
+  fixedYear: number | null = null;
+  readonly weather: Weather = { cloud: 0, rain: 0, snow: 0, fog: 0, storm: 0 };
+  readonly season: Season = { spring: 0, summer: 1, autumn: 0, winter: 0 };
   private windPhase = 0;
   private lastS = 0;
 
@@ -560,6 +673,26 @@ export class Look {
   update(focus: { x: number; y: number }, viewDir: Vector3, timeS: number) {
     const hour = (this.hour = this.fixedHour ?? hourAt(Date.now()));
     const L = lightAt(hour, this.light);
+    const now = Date.now();
+    const S = seasonAt(this.fixedYear ?? yearAt(now), this.season), W = this.weather;
+    if (this.fixedWeather) Object.assign(W, this.fixedWeather);
+    else weatherAt(now, S, W);
+    const fall = Math.max(W.rain, W.snow);
+    const flash = W.storm > 0 ? W.storm * flashAt(now) : 0;
+    // Weather bends the light it is given. Under cloud the sun goes in, the sky greys and brightens to fill
+    // in for it, shadows soften and colour drains a little; lightning lifts everything for a moment.
+    const overcast = luminance(L.sky);
+    for (let c = 0; c < 3; c++) {
+      L.key[c] *= 1 - 0.82 * W.cloud;
+      L.sky[c] = (L.sky[c] + (overcast - L.sky[c]) * 0.55 * W.cloud) * (1 + 0.3 * W.cloud) + flash * FLASH[c];
+    }
+    L.level *= (1 - 0.14 * W.cloud - 0.1 * fall - 0.12 * W.storm - 0.05 * W.fog) * (1 + 0.6 * flash);
+    L.sat *= (1 - 0.2 * W.cloud - 0.1 * W.fog) * (1 + 0.05 * S.spring + 0.04 * S.autumn - 0.1 * S.winter);
+    L.soft += 0.1 * W.cloud;
+    L.glint *= 1 - 0.85 * W.cloud;
+    // The year colours the sun a little: lower and more golden in autumn, paler in winter.
+    L.key[2] *= 1 - 0.1 * S.autumn;
+    L.key[0] *= 1 - 0.07 * S.winter;
     const { moon, theta } = keyBody(hour);
     const dir = sunDirection(theta, U.uSunDir.value);
     // The key light fades out as it meets the horizon, where sun and moon change places.
@@ -582,6 +715,14 @@ export class Look {
       (grey + open[2] * (1 - PAPER_GREY)) * paper,
     );
 
+    // Mist takes the colour of the light on open ground. Rain and snow bring a little haze of their own.
+    const mist = Math.min(0.64, 0.64 * W.fog + 0.16 * W.rain + 0.22 * W.snow), m = scale * 0.95;
+    U.uFog.value.set(open[0] * m, open[1] * m, open[2] * m, mist);
+    U.uFogBand.value.y = 6 + 6 * W.fog;
+    // Snow lies through the winter, deeper while it is falling; a snowfall at any time leaves a dusting.
+    U.uSeason.value.set(S.spring, S.autumn, S.winter, Math.max(S.winter * (0.55 + 0.45 * W.snow), 0.5 * W.snow));
+    U.uRain.value = W.rain;
+
     U.uSunBake.value.set(
       Math.asin(Math.max(0, dir.y)) / (Math.PI / 2),
       Math.min(1, Math.max(0, (theta - 1.4) / 0.35)),
@@ -597,7 +738,9 @@ export class Look {
     this.key = up * (moon ? 0.55 : 1);
 
     // Gusts travel faster in a stronger wind, so their phase is added up frame by frame.
-    const w = this.fixedWind === null ? windAt(Date.now(), this.wind) : steadyWind(this.fixedWind, this.wind);
+    const w = this.fixedWind === null ? windAt(now, this.wind) : steadyWind(this.fixedWind, this.wind);
+    // Wet weather blows harder; mist needs still air.
+    w.strength = Math.min(1, Math.max(0.05, w.strength + 0.22 * fall + 0.3 * W.storm - 0.12 * W.fog));
     const dt = Math.min(0.1, Math.max(0, timeS - this.lastS));
     this.lastS = timeS;
     this.windPhase = (this.windPhase + dt * (0.3 + 0.9 * w.strength)) % (Math.PI * 2000);
