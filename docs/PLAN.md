@@ -60,7 +60,7 @@ infra/            docker-compose: signal + coturn + seed
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
 | M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | **Built** 2026-11-12, protocol 9. Step 1: plains, ranges, cliffs, an ocean and six climates from layered maps. Step 2: rivers, streams and lakes at their own levels from a drainage simulation; every channel leads downhill to a lake or the sea, and regions agree at their edges. The same world hash in Node, Chromium and Bun (JavaScriptCore); **a run in Firefox or Safari is still owed**, and no phone was measured. See "Natural terrain" |
-| M5 | Gameplay: shared atlas/fog, landmarks, gathering, building, tending and relics, naming, talk. Design: [M5_DESIGN.md](M5_DESIGN.md) | 3–5 people on a fresh world, at least one on a phone, play 45 minutes with no instructions and: chart 150+ squares, find and name 2+ landmarks, finish 1 waystation or bridge, and at least half ask to play again. Decay is checked apart, with the debug clock: jump a world 30 and 60 days and see pieces weather, get dismantled, become relics and get found | **Designed** 2026-11-12 (every decision confirmed by Sid). Built in 11 slices; see "M5: gameplay" |
+| M5 | Gameplay: shared atlas/fog, landmarks, gathering, building, tending and relics, naming, talk. Design: [M5_DESIGN.md](M5_DESIGN.md) | 3–5 people on a fresh world, at least one on a phone, play 45 minutes with no instructions and: chart 150+ squares, find and name 2+ landmarks, finish 1 waystation or bridge, and at least half ask to play again. Decay is checked apart, with the debug clock: jump a world 30 and 60 days and see pieces weather, get dismantled, become relics and get found | **Designed** 2026-11-12 (every decision confirmed by Sid). Built in 11 slices: slice 1 (layered ops, protocol 10) is built, with no visible change yet. See "M5: gameplay" |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
 
@@ -311,7 +311,7 @@ The design is [M5_DESIGN.md](M5_DESIGN.md). Sid answered every question in it (i
 
 | # | Slice | Status |
 |---|---|---|
-| 1 | Layered ops: the generic op, both merge rules, signed dates, expiry, three scopes, seed relay, `reject`, debug clock. No visible change | |
+| 1 | Layered ops: the generic op, both merge rules, signed dates, expiry, three scopes, seed relay, `reject`, debug clock. No visible change | **Built** 2026-11-13, protocol 10, e2e-tested. See "Slice 1 as built" |
 | 2 | Charting and the atlas | |
 | 3 | Pointing: pings, emotes, quick phrases | |
 | 4 | Landmarks: discovery, credit, naming, rumours | |
@@ -322,6 +322,78 @@ The design is [M5_DESIGN.md](M5_DESIGN.md). Sid answered every question in it (i
 | 9 | Relics and caches | |
 | 10 | The arc: journal, session card, titles, text chat, mute | |
 | 11 | Group playtest and decay check | |
+
+### Slice 1 as built (2026-11-13, protocol 10)
+Layered ops: the engine every later slice builds on. **Nothing a player sees has changed:** painting tiles (the B key) works as before, on the new format. Two things differ at the edges, both by design: an edit the host refuses now disappears from the painter's screen instead of staying there, and a device whose clock is wrong by more than a couple of minutes can no longer paint (see the findings). Worlds from protocol 9 are wiped: the signal server refuses older clients, browsers drop their stored edits (IndexedDB version 2 keeps the identity only), and the seed skips old lines in its files.
+
+**The op.** `Op` in `packages/shared/src/edits.ts` is `{ l, x, y, v, clock, at, author, sig }`: a layer, a tile or a map square, a value (null removes), the Lamport clock, the author's clock in unix seconds, the author's key and the signature. It is signed over `ti-op:1|world|l|x|y|v|clock|at|author`, with `v` written as JSON whose record keys are in order, so every peer signs and hashes the same text. An op is JSON on the reliable channel, about 240 bytes for a painted tile (it was about 210).
+
+**Layers** are rows of `LAYERS`: a key (a tile, a map square, or the author alone; some keep an entry per author), a merge rule, a scope, an optional lifetime, and a rule for its values. All twelve layers of the design are in the table with their key, merge rule and scope. A layer is **open** once it has a value rule; a closed layer's ops are refused by everyone. Open now:
+
+| Layer | Key | Merge | Scope | Value | Used by |
+|---|---|---|---|---|---|
+| `tile` | tile | last wins | zone | Path, Wall or null | Painting (B key) |
+| `take` | tile | last wins, expires after 2 hours | zone | `1` | Nothing yet (slice 5) |
+| `chart` | map square | first wins | world | `1` | Nothing yet (slice 2) |
+| `purse` | author | last wins | player | `{got, used}`, each a count of the five materials | Nothing yet (slice 5) |
+
+`sign`, `found`, `name`, `way`, `give`, `cache`, `tend` and `who` are closed until their slices.
+
+**Merging** (`opWins`) is a total order per key, so replicas agree whatever order ops arrive in.
+- *Last wins:* the higher clock, then author, then signature, as before.
+- *First wins:* the earlier `at`, then the lower author, then the lower signature.
+- *Expiry:* an op older than its layer's lifetime is refused on arrival, invisible to every reader from that second, left out of digests, and swept from memory and storage (every 30 seconds in a session, every 10 minutes on the seed, which also rewrites a file that is mostly dead lines). Nothing is sent when an op expires.
+
+**Scopes** decide where an op is kept and how it travels. Ops are filed in buckets, and catch-up compares one digest per bucket: `c:cx,cy` (a chunk's zone-scope ops), `z:zx,zy` (a zone's world-scope ops, its atlas) and `p:author` (a player's own ops).
+- *Zone:* as before. Clients, the seed and neighbouring hosts within 168 tiles.
+- *World:* a peer that connects lists its atlas digests with its chunk digests (`sync`), and the host pulls and pushes whole zones of it through the same paced catch-up. A host passes every new world-scope op to all its clients, all its seeds and all eight neighbouring hosts; the seed passes it to every other host it is linked to in that world. So two zones far apart converge through the seed, and without a seed through neighbours and travelling players.
+- *Player:* a client lists its own bucket when it syncs, and the host exchanges it with that client only. The host passes a player's ops to the seeds and back to that player, never to another client or a neighbouring host. When a player joins, and when a seed links, the host asks the seed for the players it has; whichever copy is newer wins. A device only stores its own.
+
+**The live host's checks, and `reject`.** A host accepts a client's live op only from its author, within the rate limit (10 a second), within reach (4 tiles for a tile; the map square the player stands in or one next to it; anywhere for an op with no place), and dated within 2 minutes of the host's clock. A refused op is answered with `reject`: its signature, which check failed, and what the host holds at that key. The client takes its op back, puts back what it had displaced, and merges what the host sent. This closes the old "a rejected edit stays in the painter's copy" limitation. Ops that arrive by catch-up can't be checked for reach or date, as before.
+
+**Every peer's checks:** shape and value (`isWellFormed`), the signature, not expired, and not dated more than 5 minutes ahead of its own clock.
+
+**The debug clock.** `#now=+45d` (also `-2h`, `+90m`, `+30s`) shifts the clock a browser dates and expires ops by; `NOW=+45d` does the same for the seed. A shifted browser's ops are refused by peers that aren't shifted with it, so a decay test gives every browser and the seed the same shift. The debug panel shows the shift.
+
+**Budgets** (`limits.ts`), checked because ops got bigger and world-scope ops travel further:
+- An `edits` message carries at most 100 ops (it was 200): at most about 50,000 characters against a 64,000 cap, since a value may be up to 256.
+- A `sync` lists at most 1,024 atlas zones, the nearest first: about 30,000 characters.
+- Catch-up answers stay inside a client's message budget because the host only asks for what its op budget holds: 41 messages at once, then 5 a second.
+- A host takes unasked world-scope ops from a neighbouring host or a seed within the same op budget as catch-up (512 a second, burst 4,096). Their senders gather them for 250 ms, so a link carries about 4 `edits` messages a second however fast the world is charted, against a budget of 40.
+
+**Where it departed from the design, and why.**
+1. **In a layer that expires, the later `at` wins before the clock.** The design says `take` is last-wins by clock. With that rule a replica that held a high-clock harvest, let it expire, and then received a lower-clock but later harvest would keep the later one, while a replica that received them the other way round had already discarded it: the two disagree until the later one expires too. With the later date first, the op that stands is always the one that will expire last, so dropping an expired op can never bring back one it had beaten, and the any-order unit tests pass (they fail with clock first). Nothing uses `take` until slice 5, the wire format and the signature don't depend on it, and a harvest lives 2 hours, so this is cheap to change if Sid prefers the design's rule.
+2. **Three layers are open with no mechanic behind them** (`take`, `chart`, `purse`), with the design's values. The design didn't say which layers slice 1 opens. They are open so that expiry, first-wins, world scope and player scope are each carried end to end by real ops and tested in browsers, not only in unit tests. A player with the console can write them; the host checks that belong to them come with slices 2 and 5. `take` lasts a flat 2 hours until slice 5 sets regrow times per source.
+3. **`reject` is also sent when a live op simply loses the merge** (`why: 'lost'`), with what the host holds. It costs nothing and brings a client that had missed an op back in step.
+4. **Reach for a map-square op** is the square the player is in or one next to it. That is the design's slice 2 rule for `chart`, used for every square-keyed layer.
+5. **Hosts take a player's own ops only for players they host,** and ask the seed for them by player. The design only says who holds a purse. The seed answers any host for any player: a purse is signed, not secret.
+6. **World-scope relays are batched** (250 ms) between hosts and from the seed, to fit M6's link budgets. The design didn't mention it.
+7. **M6's distance rules now apply to zone-scope ops only.** A host and the seed still refuse zone-scope ops far from the sending host's zone. World-scope ops are taken from anywhere, which is the design's decision 3; the price is that one host can spread atlas ops world-wide, held only by the op budget.
+8. **Message names stayed** `edit`, `edits`, `sync` and `syncWant`. `sync` now maps bucket ids to digests and `syncWant` carries `keys`. `reject` is the one new message.
+9. **The seed can report a world** (`/health?world=<id>`, layer by layer, read from disk) and prints the port it really listens on. The restart test needs both.
+
+**Against the done-when.**
+- *`npm run typecheck` and `npm test` pass, with unit tests for both merge rules and expiry, in any order:* yes. 145 unit tests (119 before). The new ones merge every ordering of a set of ops for last-wins and first-wins, and for expiry every ordering, split at every point by time passing, swept or not.
+- *The existing e2e suite passes on the new format:* yes. The 15 tests from before pass with only their accessors changed (the op store's method names, and the bucket id in one forged `sync`). `npm run e2e` is now 19 tests. It was run in full three times: 18 of 19, then 19 of 19 twice. The one failure was a check in a new test (the purse one) that raced the seed handing the purse back; the check was rewritten so it can't race, and the full suite passed both times after.
+- *Two browsers in different zones converge on a world-scope op, and the seed keeps it across a restart:* yes, e2e. Two hosts three zones apart, with no link between them, converge on a charted square through the seeds, and agree on one winner when both sign for the same square at once. A seed started by the test holds both on disk, is stopped, and after a restart on the same directory reports both before any host exists; a newcomer in a fresh browser then gets them.
+- Also e2e-tested: a refused edit is taken back and what it replaced stands again, in memory and in storage; a `take` expires on a browser whose clock is shifted 3 hours and is refused when offered again, and that browser's own edits are refused by its host; a purse reaches the host and the seed, never another client, and comes back from the seed to a device that lost it.
+
+**Also checked, by hand** (one-off scripts, not in the suite):
+- *Relay with no seed running.* Three hosts in a row of zones (A, B, C; A and C not neighbours): a charted square crossed one border link in 88 ms and two in 134 to 260 ms. A tile painted near a border reached the neighbour; one painted deep inside a zone did not; a purse never left its host. The suite can't show this, because its seed is always running and would deliver the op anyway.
+- *The renderer.* With drawing on and chunks built in the worker, three edits made in one browser rebuilt the chunk in the other: the mesh was replaced two frames after the edit landed, as before this slice, and a painted path and wall show in screenshots.
+- *Bots.* 24 bots over 2 zones for 25 s on protocol 10: stable, 254 edits made and 5,043 merged, no errors, nothing dropped by limits. An edit measured 229 bytes sent to a host and 241 passed on.
+
+**Not verified.** The M6 measurements (100 bots and more) were not repeated on protocol 10. Nothing was run with more than a handful of atlas ops: the relay batching and the budgets above are reasoned, not measured under load. Nothing was checked on a phone or in a second browser engine. Two devices with clocks really set apart were not tried; the debug clock stands in for that.
+
+**Findings (not built).**
+- **A zone's atlas catches up 4,096 ops per link at most.** The host takes no more for one bucket than its op budget ever holds, and a peer sends a bucket whole. `chart` can't reach that (64 squares a zone). Layers with an entry per author (`tend`, `give`) could, and then the rest never arrives. They need the bucket split or paged before slices 7 and 8.
+- **A peer lists 1,024 atlas zones when it syncs,** the nearest first, so the message fits. Beyond that a host pushes what the peer didn't list, needed or not. This is the same limit as "every device holds the whole atlas".
+- **A device whose clock is more than 2 minutes out can't make live edits.** Each is refused (`why: 'clock'`) and taken back. That is the design's rule. Nothing tells the player yet; the UI slices should. A *host* whose clock runs more than 5 minutes fast keeps its own edits, but its clients and the seed refuse them as dated ahead, and they are not offered again until the next catch-up. Before this slice no edit depended on any clock.
+- **Two hosts that link up don't compare atlases.** Only new ops cross a border link. With no seed, an atlas op made before a neighbouring zone had a host reaches it only with a player who walks there.
+- **`take` regrow times per source need a way for the seed to know them.** The seed never reads terrain, and a lifetime is per layer today. If slice 5 puts the source in the op's value (wood, stone, pigment, copper, crystal), every peer can tell its lifetime from the op alone.
+- **A player with no signalling server sweeps expired ops only at the next load.** They are hidden from every reader the moment they expire; only the storage lags.
+- **"A huge clock wins forever" still holds for last-wins layers** (an M6 finding). Dates are now bounded (5 minutes ahead), clocks are not.
+- **The M5 design's rules for the M4c tiles are still open** (step 1's findings): Steps on `Cliff`, Bridges on `Lake` and `River`, wood from conifer forest, landmark types for the new tiles. They belong to slices 4 to 6.
 
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
@@ -337,19 +409,21 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 ## Current limitations (what M2 left for later)
 - **Players pop in at the edge of the screen when zoomed far out.** A host sends players within at most 128 tiles of a client. At the widest zoom on a large monitor the screen shows about 167 tiles, so players appear a little inside its corners. Across a zone border the same applies.
 - **A crowd in one spot, and a zone bigger than its host can carry, are not handled.** See the M6 findings.
-- **Limits protect hosts only.** Clients and the seed don't budget what a host sends them (the seed only refuses edits far from that host's zone). A flooding peer is disconnected, not banned: it can reconnect, and a new peer id or key is free.
+- **Limits protect hosts only.** Clients and the seed don't budget what a host sends them (the seed only refuses zone-scope edits far from that host's zone). A flooding peer is disconnected, not banned: it can reconnect, and a new peer id or key is free.
 - **Failover still reconnects clients (M3 follow-up).** The host streams its state (tick and validated positions) to two backups at 5 Hz, and the first eligible backup succeeds it. A hung host is found when a client sees 1s without snapshots and the directory's probe gets no reply within 750ms (e2e-tested at about 1.9s). After a takeover, clients still open a new WebRTC link to the successor. Pre-connecting clients to the first backup would cut that out.
 - **Backups don't change once chosen.** A backup keeps its place while it's present and eligible, so a newcomer with a better score doesn't replace it. This stops near-equal scores from reshuffling the order on every heartbeat.
 - **Election approximations.** A host's ping is its average round trip to its clients, while everyone else's is to the signal server, so the numbers aren't strictly comparable. If nobody in a zone can host (all opted out, mobile or backgrounded), the best of them hosts anyway. The track record is self-reported and kept per device in localStorage.
 - **The seed stores edits but doesn't host (M7).** The design has it host zones that have no eligible host. Today it's only a replica, so a zone of phones is still hosted by a phone.
-- **The seed only syncs when a link opens.** It catches up with a zone when it first links to that zone's host, then receives new edits live. An edit made while no seed was connected reaches the seed only when some host it links to holds that edit.
+- **The seed only syncs when a link opens.** It catches up with a zone (and exchanges the atlas) when it first links to that zone's host, then receives new edits live and passes world-scope ones on. An edit made while no seed was connected reaches the seed only when some host it links to holds that edit.
 - **The seed's disk store is one append-only file per world** (`DATA_DIR/<world>.jsonl`). It's compacted on load when superseded lines dominate, and loaded whole per world.
 - **Anyone can run a seed and receive every world's edits.** That's fine while edits are public co-op data. Restricting it would need seed credentials on the signal server.
-- **Edit checks slow casual misuse but can't stop a determined griefer.** A host accepts a live edit only from its author, within 4 tiles of where it sees that player, and at most 10 a second. Catch-up is now pulled and paced by the host (M6): only chunks of its zone that it asked for, no more than the peer said it holds, within a budget. But catch-up edits can be older edits or another player's, so the host can't check reach on them: a client that reconnects can still deliver edits anywhere in the zone, at the catch-up budget's rate. Nothing bounds an edit's clock either. Real protection needs reputation (see Risks and the M6 findings).
+- **Edit checks slow casual misuse but can't stop a determined griefer.** A host accepts a live edit only from its author, within 4 tiles of where it sees that player, at most 10 a second, and dated within 2 minutes of its own clock; it tells the client when it refuses one (`reject`). Catch-up is now pulled and paced by the host (M6): only chunks of its zone that it asked for, no more than the peer said it holds, within a budget. But catch-up edits can be older edits or another player's, so the host can't check reach on them: a client that reconnects can still deliver edits anywhere in the zone, at the catch-up budget's rate. Nothing bounds an edit's clock either. Real protection needs reputation (see Risks and the M6 findings).
 - **Every device holds the whole world's atlas layers.** World-scope ops go to every peer and are loaded whole. That is fine for hundreds of zones (a fully charted zone is about 14 kB); a big world needs per-zone summaries. M6 did not address it.
+- **A device whose clock is wrong can't edit.** A live op dated more than 2 minutes from its host's clock is refused and taken back, and nothing tells the player why yet.
+- **Catch-up for a zone's atlas is capped** at 4,096 ops per link, and a peer lists at most 1,024 atlas zones when it syncs. See the findings under "Slice 1 as built".
 - **Each device loads all its edits for a world at startup.** That's fine at today's sizes. Loading per chunk can wait until worlds grow.
 - **Identity is per device, not per player.** The Ed25519 key lives in IndexedDB, so clearing site data or switching devices makes a new identity. `peerId` is still a random id per tab, used only for connections.
-- **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 210 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
+- **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 240 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
 - **The 300-bot target is unproven.** See the M6 results: stable at 100 bots on the dev machine, which runs out of CPU before 300.
 - **Nothing is deployed.** The game runs from a local build or dev server. A build served over HTTPS has no signal server unless it was built with `VITE_SIGNAL_URL` or the link carries `#signal=wss://…`. To play from a phone before M7, serve a local build over Tailscale HTTPS (the README's "Deploy" section has the steps).
 
@@ -434,6 +508,12 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | M5: the capsule becomes a code-built explorer figure | See ART_DIRECTION.md. |
 | M5: sounds are synthesised in code; fonts are IM Fell English and Alegreya Sans | See ART_DIRECTION.md. |
 | M5: the done-when is a group playtest with numbers, plus a debug-clock decay check | "Fun" needs something that can be counted, and 60 days can't be waited for. |
+| In a layer that expires, the later signed date wins before the clock | The op that stands is then always the one that will expire last, so dropping an expired op can never bring back one it had beaten, and replicas agree whatever order ops and expiry come in. The design had the clock first. |
+| A layer is closed until its slice gives it a value rule; `take`, `chart` and `purse` are open from slice 1 with no mechanic behind them | A closed layer is refused by everyone, so half-built mechanics can't leave ops in a world. The three open ones carry expiry, first-wins, world scope and player scope through real browsers and the seed before any gameplay depends on them. |
+| Ops are filed in buckets (a chunk, a zone's atlas, a player) and every scope catches up through the same digests | One paced, host-pulled catch-up (M6's) serves all three scopes. A new layer needs no new message and no new wiring. |
+| A refused live op is answered with what the host holds at that key | The client can then put itself right in one step, whether its op broke a rule or only lost the merge. |
+| World-scope ops are gathered for 250 ms before a host or a seed passes them on to another host | They fan out to every host in the world. Sent one by one they would overrun the receiving host's message budget as soon as a world is being charted by a crowd. |
+| A host takes a player's own ops only for players it hosts, and asks the seed for them by player | It keeps purses off every device that has no use for them without the seed having to know who is where. |
 | M5: ownership and decay are checked by the live host, not inside the merge rule | The same strength as every other check. A merge-level rule would be stronger against modified clients and make the store much more complex. |
 
 ## Risks

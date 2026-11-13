@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 
 interface Probe {
@@ -428,7 +432,7 @@ test('a client cannot push edits past the reach check through catch-up messages'
     const op = await ti.paint(x, y, tile);
     const peer = ti.session.hostPeer;
     peer.sendR({ t: 'edits', ops: [op] });
-    peer.sendR({ t: 'sync', d: { [`${Math.floor(x / 32)},${Math.floor(y / 32)}`]: '1:1:x' } });
+    peer.sendR({ t: 'sync', d: { [`c:${Math.floor(x / 32)},${Math.floor(y / 32)}`]: '1:1:x' } });
     peer.sendR({ t: 'edits', ops: [op] });
     return [x, y] as [number, number];
   }, PATH);
@@ -436,6 +440,8 @@ test('a client cannot push edits past the reach check through catch-up messages'
     .toBeGreaterThanOrEqual(3);
   await b.waitForTimeout(500);
   expect(await editAt(a, x, y)).toBe(null);
+  // The host told B it refused the live edit, so B has taken it back.
+  expect(await editAt(b, x, y)).toBe(null);
 
   // An edit within reach still goes through.
   const [nx, ny] = await paintNext(b, 2, PATH);
@@ -448,7 +454,7 @@ const PATH = 8, WALL = 9; // Mirrors Tile.Path / Tile.Wall in packages/shared/sr
 
 /** The edited tile at (x, y) on a page, or null if that spot isn't edited there. */
 const editAt = (p: Page, x: number, y: number) =>
-  p.evaluate(([x, y]) => (window as any).__ti.edits.get(x, y)?.tile ?? null, [x, y] as const);
+  p.evaluate(([x, y]) => (window as any).__ti.edits.tile(x, y) as number | null, [x, y] as const);
 
 /**
  * Paint a tile near the page's player, within reach, that nobody has edited yet
@@ -460,7 +466,7 @@ async function paintNext(p: Page, dx: number, tile: number | null): Promise<[num
     const ti = (window as any).__ti;
     const px = Math.floor(ti.self.x), py = Math.floor(ti.self.y);
     const offsets = [[dx, 0], [dx, 1], [dx, -1], [-dx, 0], [-dx, 1], [-dx, -1], [0, 2], [0, -2], [1, 2], [-1, -2]];
-    const [ox, oy] = offsets.find(([ox, oy]) => !ti.edits.get(px + ox, py + oy))!;
+    const [ox, oy] = offsets.find(([ox, oy]) => !ti.edits.get('tile', px + ox, py + oy))!;
     await ti.paint(px + ox, py + oy, tile);
     return [px + ox, py + oy] as [number, number];
   }, [dx, tile] as const);
@@ -539,7 +545,7 @@ test('newcomers catch up from the host, and a returning player brings edits back
 
 // ---- Seed peer (M4b) ----
 
-/** Tiles the seed peer has stored for a world. */
+/** Ops the seed peer has stored for a world (in these tests, all of them painted tiles). */
 async function seedTiles(world: string): Promise<number> {
   const port = Number(process.env.E2E_SEED_PORT) || 8788; // As in playwright.config.ts.
   const health = await (await fetch(`http://localhost:${port}/health`)).json();
@@ -569,4 +575,254 @@ test('edits survive everyone logging off, kept by the seed peer', async ({ brows
   // New edits keep reaching the seed through the new host.
   await paintNext(b, 3, PATH);
   await expect.poll(() => seedTiles(world), { timeout: 10_000 }).toBe(3);
+});
+
+// ---- Layered ops (M5 slice 1) ----
+
+/** A page's own public key: the author of its ops. */
+const pubOf = (p: Page) => p.evaluate(() => (window as any).__ti.author as string);
+
+/** Sign and publish an op on a page, as the game does for any lasting change. Returns its signature. */
+const put = (p: Page, l: string, x: number, y: number, v: unknown) =>
+  p.evaluate(async ([l, x, y, v]) => (await (window as any).__ti.put(l, x, y, v)).sig as string, [l, x, y, v] as const);
+
+/** The signature of the op that stands at a key on a page, or null. */
+const opAt = (p: Page, l: string, x: number, y: number, author = '') =>
+  p.evaluate(([l, x, y, author]) => ((window as any).__ti.edits.get(l, x, y, author)?.sig as string | undefined) ?? null,
+    [l, x, y, author] as const);
+
+/** The ops of ours a page's host has refused, as the check that failed for each. */
+const rejects = (p: Page) => p.evaluate(() => ((window as any).__ti.rejects as Array<{ why: string }>).map((r) => r.why));
+
+/** What a seed peer holds for a world, layer by layer (read from its disk if no host has brought the world into memory). */
+async function seedLayers(port: number, world: string): Promise<Record<string, number>> {
+  return (await (await fetch(`http://localhost:${port}/health?world=${world}`)).json()).layers ?? {};
+}
+const SEED_PORT = Number(process.env.E2E_SEED_PORT) || 8788; // The seed playwright.config.ts starts.
+
+interface TestSeed {
+  port: number;
+  dir: string;
+  stop(): Promise<void>;
+}
+
+/**
+ * Start a second seed peer for one test, on a free port, so the test can stop
+ * and restart it. It keeps its ops in `dir` (a new temporary one by default).
+ */
+async function startSeed(dir = mkdtempSync(joinPath(tmpdir(), 'terra-seed-e2e-own-'))): Promise<TestSeed> {
+  const signalPort = Number(process.env.E2E_SIGNAL_PORT) || 8787; // As in playwright.config.ts.
+  const child = spawn(process.execPath, ['apps/seed/src/seed.ts'], {
+    env: { ...process.env, SIGNAL_URL: `ws://localhost:${signalPort}`, SEED_PORT: '0', DATA_DIR: dir },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const stop = () => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill();
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    let out = '';
+    child.stdout!.on('data', (chunk) => {
+      out += String(chunk);
+      const m = /seed listening on :(\d+)/.exec(out);
+      if (m) resolve(Number(m[1]));
+    });
+    child.once('exit', (code) => reject(new Error(`the test's seed exited (${code}) before it was listening`)));
+    setTimeout(() => reject(new Error("the test's seed did not start")), 20_000);
+  }).catch(async (err) => {
+    await stop();
+    throw err;
+  });
+  return { port, dir, stop };
+}
+
+test('a refused edit is taken back, and what it replaced stands again', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length).toBe(1);
+
+  // The host walls a tile 40 tiles from B (a host's own edits aren't checked), and B sees it.
+  const [x, y] = await b.evaluate(() => {
+    const ti = (window as any).__ti;
+    return [Math.floor(ti.self.x) + 40, Math.floor(ti.self.y)] as [number, number];
+  });
+  await a.evaluate(([x, y, tile]) => (window as any).__ti.paint(x, y, tile), [x, y, WALL] as const);
+  await expect.poll(() => editAt(b, x, y), { timeout: 10_000 }).toBe(WALL);
+
+  // B paints over it from where it stands. Its own copy changes at once; the host refuses the edit
+  // (out of reach) and says so, and B's copy goes back to the wall, in memory and in storage.
+  await b.evaluate(([x, y, tile]) => (window as any).__ti.paint(x, y, tile), [x, y, PATH] as const);
+  await expect.poll(() => rejects(b), { timeout: 10_000 }).toEqual(['reach']);
+  expect(await editAt(b, x, y)).toBe(WALL);
+  expect(await editAt(a, x, y)).toBe(WALL);
+  expect(await b.evaluate(() => (window as any).__ti.session.stats.opsRetracted)).toBe(1);
+  expect(await b.evaluate(([x, y]) => (window as any).__ti.tiles.get(x, y), [x, y] as const)).toBe(WALL);
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.edits);
+  expect(await editAt(b, x, y)).toBe(WALL);
+});
+
+test('an op expires on every device by its date, and the debug clock shifts a device', async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+
+  // A harvest (a `take` op) lasts two hours. B gets A's, and stores it.
+  const [x, y] = await a.evaluate(() => {
+    const ti = (window as any).__ti;
+    return [Math.floor(ti.self.x) + 1, Math.floor(ti.self.y)] as [number, number];
+  });
+  const taken = await put(a, 'take', x, y, 1);
+  await expect.poll(() => opAt(b, 'take', x, y), { timeout: 10_000 }).toBe(taken);
+  // It lies on top of the land: the tile under it is what it was.
+  expect(await editAt(b, x, y)).toBe(null);
+
+  // B comes back with its clock three hours on. The harvest it stored has expired, and A's copy,
+  // offered again when B syncs, is refused: on B the source has regrown, on A it has not yet.
+  await b.goto(`/#w=${world}&render=0&debug=1&now=+3h`);
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.session);
+  expect(await b.evaluate(() => (window as any).__ti.clockShift)).toBe(3 * 3600);
+  await expect(b.locator('#debug')).toContainText('ops dated +3h');
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await b.waitForTimeout(1000);
+  expect(await opAt(b, 'take', x, y)).toBe(null);
+  expect(await opAt(a, 'take', x, y)).toBe(taken);
+
+  // What B signs now is dated three hours ahead of its host, which refuses it; B takes it back.
+  const [bx, by] = await paintNext(b, 2, PATH);
+  await expect.poll(() => rejects(b), { timeout: 10_000 }).toEqual(['clock']);
+  expect(await editAt(b, bx, by)).toBe(null);
+  expect(await editAt(a, bx, by)).toBe(null);
+  // Edits that never expire still reach B from a host three hours behind it.
+  const [ax, ay] = await paintNext(a, -2, WALL);
+  await expect.poll(() => editAt(b, ax, ay), { timeout: 10_000 }).toBe(WALL);
+});
+
+test('a world-scope op reaches a far zone through the seed, and the seed keeps it across a restart', async ({ browser }) => {
+  test.setTimeout(150_000);
+  const world = `e2e${Date.now()}`;
+  let seed = await startSeed();
+  try {
+    const a = await join(browser, world);
+    await expect.poll(async () => (await probe(a)).role).toBe('host');
+    const b = await join(browser, world);
+    await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+
+    // B goes three zones east and hosts the zone there. The two zones aren't neighbours,
+    // so their hosts have no link: the only peers linked to both are the seeds.
+    const home = (await probe(a)).zone;
+    const [zx, zy] = home.split(',').map(Number);
+    await teleport(b, (zx + 3) * ZONE_TILES + 100);
+    await expect.poll(async () => (await probe(b)).zone, { timeout: 10_000 }).toBe(`${zx + 3},${zy}`);
+    await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
+    expect((await probe(a)).role).toBe('host');
+    for (const p of [a, b]) {
+      await expect.poll(() => p.evaluate(() => (window as any).__ti.session.seedCount), { timeout: 30_000 }).toBe(2);
+      expect((await probe(p)).borders).toBe(0);
+    }
+
+    // A charts the map square it stands in. B, three zones away, gets it.
+    const [cx, cy] = await a.evaluate(() => {
+      const ti = (window as any).__ti;
+      return [Math.floor(ti.self.x / 32), Math.floor(ti.self.y / 32)] as [number, number];
+    });
+    const first = await put(a, 'chart', cx, cy, 1);
+    await expect.poll(() => opAt(b, 'chart', cx, cy), { timeout: 15_000 }).toBe(first);
+
+    // Both sign for the next square at the same moment. First wins: one of the two stands, the same one on both.
+    const [fromA, fromB] = await Promise.all([put(a, 'chart', cx + 1, cy, 1), put(b, 'chart', cx + 1, cy, 1)]);
+    await expect.poll(async () => {
+      const [onA, onB] = [await opAt(a, 'chart', cx + 1, cy), await opAt(b, 'chart', cx + 1, cy)];
+      return onA === onB && (onA === fromA || onA === fromB);
+    }, { timeout: 15_000 }).toBe(true);
+    const second = await opAt(a, 'chart', cx + 1, cy);
+
+    // The test's own seed holds both squares. It is stopped, and everyone leaves.
+    await expect.poll(() => seedLayers(seed.port, world), { timeout: 15_000 }).toEqual({ chart: 2 });
+    await seed.stop();
+    await a.context().close();
+    await b.context().close();
+
+    // Started again on the same directory, it has them before any host exists to hand them back.
+    seed = await startSeed(seed.dir);
+    expect(await seedLayers(seed.port, world)).toEqual({ chart: 2 });
+
+    // A newcomer in a fresh browser, in yet another zone, gets the atlas when the seeds link to it.
+    const c = await join(browser, world);
+    await teleport(c, (zx - 2) * ZONE_TILES + 100);
+    await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('host');
+    await expect.poll(() => opAt(c, 'chart', cx, cy), { timeout: 30_000 }).toBe(first);
+    await expect.poll(() => opAt(c, 'chart', cx + 1, cy), { timeout: 10_000 }).toBe(second);
+  } finally {
+    await seed.stop();
+    rmSync(seed.dir, { recursive: true, force: true });
+  }
+});
+
+test("a player's own ops go to its host and the seed, and to no other player", async ({ browser }) => {
+  const world = `e2e${Date.now()}`;
+  const a = await join(browser, world);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  await expect.poll(() => a.evaluate(() => (window as any).__ti.session.seedCount), { timeout: 20_000 }).toBe(1);
+  const b = await join(browser, world);
+  const c = await join(browser, world);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  await expect.poll(async () => (await probe(c)).role, { timeout: 20_000 }).toBe('client');
+
+  // B signs a purse (a player-scope op). Its host and the seed hold it; C, another client, never sees it.
+  const bPub = await pubOf(b);
+  const purse = { got: { w: 5, s: 2, p: 0, c: 0, x: 0 }, used: { w: 1, s: 0, p: 0, c: 0, x: 0 } };
+  const sig = await put(b, 'purse', 0, 0, purse);
+  await expect.poll(() => opAt(a, 'purse', 0, 0, bPub), { timeout: 10_000 }).toBe(sig);
+  await expect.poll(() => seedLayers(SEED_PORT, world), { timeout: 10_000 }).toEqual({ purse: 1 });
+  // A world-scope op made after it has reached C, so the purse would have by now if it were going to.
+  const [cx, cy] = await b.evaluate(() => {
+    const ti = (window as any).__ti;
+    return [Math.floor(ti.self.x / 32), Math.floor(ti.self.y / 32)] as [number, number];
+  });
+  const chart = await put(b, 'chart', cx, cy, 1);
+  await expect.poll(() => opAt(c, 'chart', cx, cy), { timeout: 10_000 }).toBe(chart);
+  expect(await opAt(c, 'purse', 0, 0, bPub)).toBe(null);
+
+  // B's device loses its stored ops (its identity stays). Loaded again while cut off from the signal
+  // server (an unreachable address), it has no purse: nothing on the device holds one any more.
+  await b.evaluate(() => new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('terra-ignota');
+    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const tx = req.result.transaction('ops', 'readwrite');
+      tx.objectStore('ops').clear();
+      tx.oncomplete = () => {
+        req.result.close();
+        resolve();
+      };
+    };
+  }));
+  await b.goto(`/#w=${world}&render=0&debug=1&signal=ws://127.0.0.1:9`);
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.session);
+  expect(await pubOf(b)).toBe(bPub);
+  expect(await opAt(b, 'purse', 0, 0, bPub)).toBe(null);
+
+  // Everyone else leaves, so only the seed holds B's purse. B comes back online, hosts the zone
+  // alone, and the seed hands the purse back.
+  await a.context().close();
+  await c.context().close();
+  await b.goto(`/#w=${world}&render=0&debug=1`);
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.session);
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('host');
+  await expect.poll(() => opAt(b, 'purse', 0, 0, bPub), { timeout: 30_000 }).toBe(sig);
+  // It is stored again, so it is there on the next load before any link is up.
+  await b.goto(`/#w=${world}&render=0&debug=1&signal=ws://127.0.0.1:9`);
+  await b.reload();
+  await b.waitForFunction(() => (window as any).__ti?.session);
+  expect(await opAt(b, 'purse', 0, 0, bPub)).toBe(sig);
 });

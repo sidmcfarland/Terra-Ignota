@@ -1,7 +1,8 @@
-import { generateIdentityKeys, identityFromKeys, type Identity, type TileOp } from '@terra/shared';
+import { asOp, generateIdentityKeys, identityFromKeys, opKey, type Identity, type Op } from '@terra/shared';
 
 const DB = 'terra-ignota';
-const VERSION = 1;
+// Version 2: ops became layered (protocol 10), and worlds were wiped with them.
+const VERSION = 2;
 const KEYS = 'keys';
 const OPS = 'ops';
 
@@ -22,8 +23,11 @@ export class Store {
       const db = await new Promise<IDBDatabase>((resolve, reject) => {
         const req = indexedDB.open(DB, VERSION);
         req.onupgradeneeded = () => {
-          req.result.createObjectStore(KEYS);
-          req.result.createObjectStore(OPS);
+          const db = req.result;
+          // The identity is kept across versions. Ops in an older format are dropped.
+          if (!db.objectStoreNames.contains(KEYS)) db.createObjectStore(KEYS);
+          if (db.objectStoreNames.contains(OPS)) db.deleteObjectStore(OPS);
+          db.createObjectStore(OPS);
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
@@ -46,19 +50,29 @@ export class Store {
   }
 
   /** Every op stored for a world. */
-  async loadOps(world: string): Promise<TileOp[]> {
+  async loadOps(world: string): Promise<Op[]> {
     if (!this.db) return [];
     const range = IDBKeyRange.bound(`${world}|`, `${world}|￿`);
     return new Promise((resolve) => {
       const req = this.db!.transaction(OPS).objectStore(OPS).getAll(range);
-      req.onsuccess = () => resolve(req.result as TileOp[]);
+      req.onsuccess = () => resolve((req.result as unknown[]).map(asOp).filter((op): op is Op => op !== null));
       req.onerror = () => resolve([]);
     });
   }
 
-  /** Store the winning op for a tile (replacing the one it beat). */
-  saveOp(world: string, op: TileOp): void {
-    void this.put(OPS, `${world}|${op.x},${op.y}`, op);
+  /** Store the op that stands at its key (replacing the one it beat). */
+  saveOp(world: string, op: Op): void {
+    void this.put(OPS, `${world}|${opKey(op)}`, op);
+  }
+
+  /** Forget the op stored at this op's key: it expired, or the host refused it. */
+  deleteOp(world: string, op: Op): void {
+    if (!this.db) return;
+    try {
+      this.db.transaction(OPS, 'readwrite').objectStore(OPS).delete(`${world}|${opKey(op)}`);
+    } catch {
+      // The database is closing. An expired op left behind is dropped the next time it is loaded.
+    }
   }
 
   private get(store: string, key: string): Promise<unknown> {

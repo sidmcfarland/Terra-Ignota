@@ -1,8 +1,8 @@
-import type { TileOp } from './edits.ts';
+import type { Op } from './edits.ts';
 import type { HostMetrics } from './election.ts';
 import type { ZoneId } from './zones.ts';
 
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 // ---- Client <-> signaling server (WebSocket, JSON) ----
 
@@ -84,17 +84,26 @@ export type PlayerPos = [n: number, x: number, y: number];
 export type Reliable =
   /** Client to host on connect. pub is the device's Ed25519 public key, the author of its edits. */
   | { t: 'hello'; info: PlayerInfo; x: number; y: number; pub: string }
-  /** Client to host: a new edit by this client. */
-  | { t: 'edit'; op: TileOp }
-  /** Any direction (including between neighbouring hosts): edits to merge. */
-  | { t: 'edits'; ops: TileOp[] }
-  /** Client to host on connect: a digest per zone chunk the client holds edits for. */
+  /** Client to host: a new op by this client, in any layer. */
+  | { t: 'edit'; op: Op }
+  /**
+   * Host to client: the host refused the client's live op with this signature, so the client takes it back.
+   * `why` says which check failed: 'author', 'rate', 'reach', 'clock', 'sig', or 'lost' (it lost the merge to
+   * what the host holds). `cur` is what the host holds at that op's key, if anything, for the client to merge.
+   */
+  | { t: 'reject'; sig: string; why: string; cur?: Op }
+  /** Any direction (including between neighbouring hosts, and between a host and a seed): ops to merge. */
+  | { t: 'edits'; ops: Op[] }
+  /**
+   * A client or a seed to a host on connect: a digest for each bucket it holds ops in (see BucketId in
+   * edits.ts): the zone's chunks, the zones of the atlas, and a client's own player-scope ops.
+   */
   | { t: 'sync'; d: Record<string, string> }
   /**
-   * Host to a syncing peer: chunks where the peer may have edits the host lacks; send them.
-   * The host asks a few chunks at a time, and only accepts edits for chunks it asked for.
+   * Host to a syncing peer: buckets where the peer may have ops the host lacks; send them.
+   * The host asks a few buckets at a time, and only accepts catch-up ops for buckets it asked for.
    */
-  | { t: 'syncWant'; chunks: string[] }
+  | { t: 'syncWant'; keys: string[] }
   /** Host to client: players about to appear in its snapshots. Sent once per player, as each first comes into the client's view. */
   | { t: 'meet'; players: PlayerEntry[] }
   /** Host to neighbouring host: the players in the sender's zone. */

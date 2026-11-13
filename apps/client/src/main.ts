@@ -1,7 +1,8 @@
 import './style.css';
 import {
-  Tile, TileCache, TileEdits, ZONE_TILES, findSpawn, isWalkable, nextZone, signOp, step, worldSeed, zoneName, zoneOf,
-  type PlayerInfo, type TileOp,
+  LAYERS, OpStore, Tile, TileCache, ZONE_TILES, findSpawn, isWalkable, nextZone, parseClockShift, signOp, step, wallClock,
+  worldSeed, zoneName, zoneOf,
+  type Layer, type Op, type PlayerInfo, type Value,
 } from '@terra/shared';
 import { inviteSpot, inviteUrl, loadConfig } from './config.ts';
 import { DebugPanel } from './debug.ts';
@@ -35,8 +36,15 @@ async function main() {
   // Ops were verified before they were stored, so they load without re-checking.
   const store = await Store.open();
   const identity = await store.identity();
-  const edits = new TileEdits();
-  for (const op of await store.loadOps(cfg.world)) edits.merge(op);
+  // `#now=+45d` shifts the clock that dates ops and expires them, so decay can be seen without waiting.
+  const clockShift = parseClockShift(new URLSearchParams(location.hash.slice(1)).get('now'));
+  const edits = new OpStore(wallClock(clockShift));
+  // An op that doesn't load has expired since it was stored.
+  for (const op of await store.loadOps(cfg.world)) if (!edits.merge(op)) store.deleteOp(cfg.world, op);
+  // Another player's own ops (a purse this device held while hosting them) are kept in memory only.
+  const keep = (op: Op) => LAYERS[op.l].scope !== 'player' || op.author === identity.pub;
+  /** Ops of ours the host refused, newest last: for the debug hook. */
+  const rejects: Array<{ op: Op; why: string }> = [];
   const tiles = new TileCache(worldSeed(cfg.world), 1024, edits);
   // Rivers and lakes are simulated a region at a time. A worker gets the regions near the player ready
   // ahead of need (first the ones the game starts in); one that isn't ready is computed on the spot.
@@ -109,7 +117,12 @@ async function main() {
         info,
         identity,
         edits,
-        onMerged: (op) => store.saveOp(cfg.world, op),
+        onMerged: (op) => keep(op) && store.saveOp(cfg.world, op),
+        onRemoved: (op) => store.deleteOp(cfg.world, op),
+        onRejected: (op, why) => {
+          rejects.push({ op, why });
+          if (rejects.length > 32) rejects.shift();
+        },
         profile,
         iceServers: cfg.iceServers,
         tiles: tiles.get,
@@ -123,18 +136,24 @@ async function main() {
   // (Not the tile you're on: a wall there would trap you.)
   let facing = { x: 0, y: 1 };
   const NEXT: Record<string, Tile | null> = { none: Tile.Path, [Tile.Path]: Tile.Wall, [Tile.Wall]: null };
-  const paint = async (x: number, y: number, tile: Tile | null): Promise<TileOp> => {
-    const op = await signOp(cfg.world, identity, { x, y, tile, clock: edits.nextClock() });
-    if (edits.merge(op)) store.saveOp(cfg.world, op);
-    session?.publish(op);
+  // Every lasting change is an op in some layer: signed, merged here first, then passed on. If the host
+  // refuses it, the session takes it back and what it displaced stands again.
+  const put = async (l: Layer, x: number, y: number, v: Value | null): Promise<Op> => {
+    const op = await signOp(cfg.world, identity, { l, x, y, v, clock: edits.nextClock(), at: edits.now() });
+    const prev = edits.current(op) ?? null;
+    if (edits.merge(op)) {
+      store.saveOp(cfg.world, op);
+      session?.publish(op, prev);
+    }
     return op;
   };
+  const paint = (x: number, y: number, tile: Tile | null) => put('tile', x, y, tile);
   addEventListener('keydown', (e) => {
     if (e.repeat || e.key.toLowerCase() !== 'b' || e.target instanceof HTMLInputElement) return;
     const x = Math.floor(self.x + facing.x), y = Math.floor(self.y + facing.y);
     if (x === Math.floor(self.x) && y === Math.floor(self.y)) return;
-    const cur = edits.get(x, y)?.tile;
-    void paint(x, y, NEXT[cur === undefined || cur === null ? 'none' : cur] ?? null);
+    const cur = edits.tile(x, y);
+    void paint(x, y, NEXT[cur === null ? 'none' : cur] ?? null);
   });
 
   const status = document.getElementById('status')!;
@@ -187,7 +206,7 @@ async function main() {
         `world ${cfg.world} · zone ${zone} ${zoneName(tiles.seed, zone)}\n${net}\n` +
         `${cfg.name} @ ${Math.floor(self.x)}, ${Math.floor(self.y)}\nQ / E rotate view · B paint · F3 debug`;
       debug.render({
-        seed: tiles.seed, zone, self, peerId: cfg.peerId, name: cfg.name, session, edits, author: identity.pub,
+        seed: tiles.seed, zone, self, peerId: cfg.peerId, name: cfg.name, session, edits, author: identity.pub, clockShift,
         perf: draw ? view.perf : null,
         hour: draw ? view.hour : null,
         moon: draw ? view.moon : null,
@@ -202,7 +221,7 @@ async function main() {
 
   // Test/debug hook.
   (window as unknown as { __ti: unknown }).__ti = {
-    cfg, self, session, tiles, edits, paint, author: identity.pub, view,
+    cfg, self, session, tiles, edits, paint, put, rejects, clockShift, author: identity.pub, view,
     setZoom: (z: number) => (zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))),
     getZoom: () => zoom,
   };

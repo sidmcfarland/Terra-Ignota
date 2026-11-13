@@ -48,7 +48,7 @@ interface Op {
 
 - **Last wins** is today's rule (`opWins`: clock, then author, then signature).
 - **First wins** keeps the op with the lowest `at`, ties broken by author then signature. It is still a CRDT (a minimum over a total order). It needs a wall clock because Lamport clocks say nothing about which of two unsynced players was really first.
-- **Expires:** a `take` older than its regrow time is dropped everywhere and left out of digests, so harvesting never grows storage.
+- **Expires:** a `take` older than its regrow time is dropped everywhere and left out of digests, so harvesting never grows storage. *(As built in slice 1: in a layer that expires, the later `at` wins before the clock is compared, so that expiry and merging give the same result in any order. PLAN.md, "Slice 1 as built", lists this and the other places the build left this section.)*
 - **Zone scope** syncs as today: per-chunk digests for the zone you are in.
 - **World scope** ("atlas layers") syncs everywhere: `sync` gains a digest per zone of that zone's atlas ops; hosts pass new atlas ops to all neighbouring hosts; the seed passes them to every host it is linked to in that world. Without a seed, atlas data still travels with players and across linked hosts. `who` ops are kept with zone 0,0's.
 - **Player scope:** held by the author's device, their current host and the seed. Not spread to other players.

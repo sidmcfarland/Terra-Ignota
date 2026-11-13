@@ -1,5 +1,5 @@
 import { CHUNK } from './constants.ts';
-import type { TileEdits } from './edits.ts';
+import type { OpStore } from './edits.ts';
 import { generateChunk, type Tile } from './worldgen.ts';
 
 /**
@@ -13,17 +13,25 @@ export class TileCache {
   private patched = new Map<string, Uint8Array>();
   private listeners = new Set<(cx: number, cy: number) => void>();
   readonly seed: number;
-  readonly edits: TileEdits | null;
+  readonly edits: OpStore | null;
   private readonly max: number;
 
-  constructor(seed: number, max = 1024, edits: TileEdits | null = null) {
+  constructor(seed: number, max = 1024, edits: OpStore | null = null) {
     this.seed = seed;
     this.max = max;
     this.edits = edits;
-    edits?.onChange((cx, cy) => {
+    // Only painted tiles change what a tile is. Other layers lie on top of the land and leave it as it was.
+    edits?.onChange((op) => {
+      if (op.l !== 'tile') return;
+      const cx = Math.floor(op.x / CHUNK), cy = Math.floor(op.y / CHUNK);
       this.patched.delete(`${cx},${cy}`);
       for (const fn of this.listeners) fn(cx, cy);
     });
+  }
+
+  /** Whether players have painted any tile of a chunk. */
+  edited(cx: number, cy: number): boolean {
+    return !!this.edits?.hasTiles(cx, cy);
   }
 
   /** The generated chunk, before edits. */
@@ -41,12 +49,12 @@ export class TileCache {
   /** The chunk as players see it: generated, with any edits applied. */
   chunk(cx: number, cy: number): Uint8Array {
     const key = `${cx},${cy}`;
-    if (!this.edits?.hasChunk(key)) return this.base(cx, cy);
+    if (!this.edits?.hasTiles(cx, cy)) return this.base(cx, cy);
     let c = this.patched.get(key);
     if (!c) {
       c = this.base(cx, cy).slice();
-      for (const op of this.edits.chunkOps(key)) {
-        if (op.tile !== null) c[(op.y - cy * CHUNK) * CHUNK + (op.x - cx * CHUNK)] = op.tile;
+      for (const op of this.edits.tilesIn(cx, cy)) {
+        if (op.v !== null) c[(op.y - cy * CHUNK) * CHUNK + (op.x - cx * CHUNK)] = op.v as Tile;
       }
       if (this.patched.size >= this.max) this.patched.delete(this.patched.keys().next().value!);
       this.patched.set(key, c);
@@ -55,8 +63,8 @@ export class TileCache {
   }
 
   get = (x: number, y: number): Tile => {
-    const op = this.edits?.get(x, y);
-    if (op && op.tile !== null) return op.tile;
+    const painted = this.edits?.tile(x, y);
+    if (painted !== null && painted !== undefined) return painted;
     const cx = Math.floor(x / CHUNK), cy = Math.floor(y / CHUNK);
     return this.base(cx, cy)[(y - cy * CHUNK) * CHUNK + (x - cx * CHUNK)] as Tile;
   };

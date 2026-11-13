@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { availableParallelism } from 'node:os';
 import {
-  EDIT_REACH, Tile, TileCache, TileEdits, ZONE_MARGIN, ZONE_TILES, clientCap, findSpawn, generateIdentityKeys,
+  EDIT_REACH, OpStore, Tile, TileCache, ZONE_MARGIN, ZONE_TILES, clientCap, findSpawn, generateIdentityKeys,
   identityFromKeys, isWading, isWalkable, nextZone, parseZone, signOp, step, tileAt, worldSeed, zoneOf,
   type HostMetrics, type Identity, type TileLookup, type ZoneId,
 } from '@terra/shared';
@@ -142,7 +142,7 @@ export class Bot {
   private readonly o: Options;
   private readonly rand: () => number;
   private readonly identity: Identity;
-  private readonly edits = new TileEdits();
+  private readonly edits = new OpStore();
   private readonly tiles: TileLookup;
   private readonly roamer: boolean;
   private readonly home: ZoneId;
@@ -166,10 +166,7 @@ export class Bot {
     this.tally = tally;
     this.identity = identity;
     this.rand = mulberry32(world.seed ^ Math.imul(index + 1, 0x9e3779b1));
-    this.tiles = (x, y) => {
-      const op = this.edits.get(x, y);
-      return op && op.tile !== null ? op.tile : world.base.get(x, y);
-    };
+    this.tiles = (x, y) => this.edits.tile(x, y) ?? world.base.get(x, y);
     // Bots are dealt to zones in turn, and roles go by a bot's rank within its zone, so
     // every zone gets its share of hosts and roamers. The first bot in each zone can host.
     this.home = world.zones[index % world.zones.length];
@@ -317,9 +314,11 @@ export class Bot {
       const x = Math.floor(this.pos.x + (this.rand() - 0.5) * 2 * reach);
       const y = Math.floor(this.pos.y + (this.rand() - 0.5) * 2 * reach);
       const tile = this.rand() < 0.3 ? null : Tile.Path;
-      const op = await signOp(this.world.id, this.identity, { x, y, tile, clock: this.edits.nextClock() });
-      this.edits.merge(op);
-      this.session.publish(op);
+      const op = await signOp(this.world.id, this.identity, {
+        l: 'tile', x, y, v: tile, clock: this.edits.nextClock(), at: this.edits.now(),
+      });
+      const prev = this.edits.current(op) ?? null;
+      if (this.edits.merge(op)) this.session.publish(op, prev);
       this.editsMade++;
     } finally {
       this.painting = false;
