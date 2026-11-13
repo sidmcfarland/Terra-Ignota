@@ -155,7 +155,7 @@ The colours of the light change through the day. They are in "Time of day" below
 - **`#time=`** holds the light still: a name (`dawn`, `morning`, `noon`, `afternoon`, `golden`, `sunset`, `dusk`, `night`) or an hour such as `#time=16.5`. `window.__ti.view.setHour(h)` does the same; `setHour(null)` returns to the clock. The debug panel shows the hour.
 
 ## Water
-**Built in visual-foundation milestones 1, 7 and 8 (2026-11-12). The sea and the lakes' colours are Decided; the rivers, streams and raised lakes of milestone 8 are awaiting Sid.** The code is the water shader in `look.ts` and the height field and water mesh in `terrain.ts`.
+**Decided.** Built in visual-foundation milestones 1, 7 and 8 (2026-11-12). Sid approved the sea and the lakes' colours on 2026-11-12, and the rivers, streams and raised lakes of milestone 8 on 2026-11-13. The code is the water shader in `look.ts` and the height field and water mesh in `terrain.ts`.
 
 - **Every water stands at its own level.** The sea is at height 0. A lake stands wherever its basin filled, a river falls along its course, and each is drawn there. The generator (M4c step 2) gives the surface; the renderer gives each corner of the map a ground height and, where it is wet, a water level.
 - **How deep it is drawn.**
@@ -390,13 +390,13 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Lakes differ from the sea in the water itself: greener, darker, stiller, edged with reeds and no surf | A lake and a sea bay should never be confused at a glance, and the difference should be visible from far out. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Cliffs show bedding: level seams drawn by the ground shader from the height of each pixel | A bare steep facet is a grey smear. Seams that run level across a whole escarpment make it read as rock and as one continuous wall. It costs a few operations per pixel and no texture. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Decided by Sid, 2026-11-12: "Keep it ragged". |
-| 2026-11-12 | Ground cover and wind sway fade out as the view zooms out, and the work for them is skipped | A blade under three pixels and a sway under one cannot be seen, and fully zoomed out is the heaviest view. Sid's steer for milestone 8. |
-| 2026-11-12 | The pixel ratio follows measured frame time, between the screen's own (capped at 2) and 1 | Pixels are most of a phone's frame cost, and sharpness is the cheapest thing to trade for 60 frames a second. Sid's steer for milestone 8. |
-| 2026-11-12 | Chunk meshes are built in a worker, asked for 8 tiles ahead of the view, and shown in place of the old mesh when ready | Building a chunk was the last main-thread cost that scaled with the device: 4 to 30 ms here, several times that on a phone. Sid's steer for milestone 8. |
+| 2026-11-12 | Ground cover and wind sway fade out as the view zooms out, and the work for them is skipped | A blade under three pixels and a sway under one cannot be seen, and fully zoomed out is the heaviest view. Sid's steer for milestone 8. Approved by Sid, 2026-11-13. |
+| 2026-11-12 | The pixel ratio follows measured frame time, between the screen's own (capped at 2) and 1 | Pixels are most of a phone's frame cost, and sharpness is the cheapest thing to trade for 60 frames a second. Sid's steer for milestone 8. That it never goes below 1 was approved by Sid, 2026-11-13. |
+| 2026-11-12 | Chunk meshes are built in a worker, asked for 8 tiles ahead of the view, and shown in place of the old mesh when ready | Building a chunk was the last main-thread cost that scaled with the device: 4 to 30 ms here, several times that on a phone. Sid's steer for milestone 8. That an edit shows two frames later was approved by Sid, 2026-11-13. |
 | 2026-11-12 | The chunk worker and the region worker are one script started twice, and regions are handed from one to the other | One worker for both would stall chunks for a quarter of a second (more on a phone) whenever a region is computed; two that each computed regions would do that work twice. |
-| 2026-11-12 | Crowns thin over the three nearest other explorers, as they do over your own | "Shared, not lonely": another explorer should read as company, not vanish in a wood. It reuses the lantern positions the shaders already have, so it adds no uniforms and no draw calls. Sid's steer for milestone 8. |
-| 2026-11-12 | The moon has phases over an eight-day month, and they change only how bright the night is | A different night each time you play, for no cost. Keeping the moon's hours fixed keeps the approved rule that it rises as the sun sets, and the baked shadows with it. |
-| 2026-11-12 | Each flower keeps to its season, decided in the shader from a kind carried on its vertices | The seasons were recolouring the land while its flowers stayed out all year. A table of numbers and one byte per vertex, with nothing rebuilt as the year turns. |
+| 2026-11-12 | Crowns thin over the three nearest other explorers, as they do over your own | "Shared, not lonely": another explorer should read as company, not vanish in a wood. It reuses the lantern positions the shaders already have, so it adds no uniforms and no draw calls. Sid's steer for milestone 8. Approved by Sid, 2026-11-13. |
+| 2026-11-12 | The moon has phases over an eight-day month, and they change only how bright the night is | A different night each time you play, for no cost. Keeping the moon's hours fixed keeps the approved rule that it rises as the sun sets, and the baked shadows with it. Approved by Sid, 2026-11-13. |
+| 2026-11-12 | Each flower keeps to its season, decided in the shader from a kind carried on its vertices | The seasons were recolouring the land while its flowers stayed out all year. A table of numbers and one byte per vertex, with nothing rebuilt as the year turns. Approved by Sid, 2026-11-13. |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
@@ -470,7 +470,7 @@ The order is by how much each step decides the look of everything after it. Each
 - **Streams, rivers and raised lakes had no water** until milestone 8: the renderer drew one water surface at sea level, so they showed as ground in a flat colour. They now have water at their own levels (see "Water").
 - **The generator gives a channel no depth and no distance to its middle** (found in milestone 8), only its surface and its kind. So a stream or river is drawn at one fixed depth from bank to bank, and its banks step at the size of a tile. A distance to the channel's centre line in `Ground` would allow a bed that shelves and a smoother bank. It would not change any tile or rule.
 - **Rivers drop steeply in places:** 72 spans within about 2,600 tiles of the `vista` spawn fall more than half a tile in a tile and a half, some by 3 tiles, including where a river meets the sea below a cliff. They are drawn as a slope of white water one tile long, not as a sheer fall.
-- **One shared unit test ran close to its time limit.** `worldgen > gives the same answer whatever was asked before` takes 4.2 to 4.7 s on the development machine, against the default limit of 5 s. With one more test file running beside it (the chunk builder's, which computes a region) it failed about every other run, at 5.1 to 5.3 s. The limit for all tests is now 15 s (`vitest.config.ts`); the test itself is untouched. **For Sid to confirm or reverse.**
+- **One shared unit test ran close to its time limit.** `worldgen > gives the same answer whatever was asked before` takes 4.2 to 4.7 s on the development machine, against the default limit of 5 s. With one more test file running beside it (the chunk builder's, which computes a region) it failed about every other run, at 5.1 to 5.3 s. The limit for all tests is now 15 s (`vitest.config.ts`); the test itself is untouched. Sid, 2026-11-13: "Keep 15 s".
 - **The renderer drew chunks nobody could see** (found building the worker). A chunk the view had moved off stayed in the scene until it was two chunks away, drawn as blank parchment over the paper. It is hidden now. This is the only difference between pictures from before and after the worker.
 - **Two traps in measuring this renderer,** both met while measuring the worker:
   - A timing loop that makes a new `MessageChannel` for every pause makes thousands a second, and the browser's clean-up of them shows up as stalls of 60 to 400 ms inside whatever code is running. The harness reuses one.
@@ -675,15 +675,23 @@ Sid answered every item that was waiting, through the coordinating session. The 
 **Decided later**
 - **The sheer cliffs' rim** (item 33): "Keep it ragged". Walkable ground beside a cliff stays at its true heights, as built. No change.
 
+### Decided by Sid (2026-11-13)
+Sid answered items 34 to 44, all of milestone 8, through the coordinating session, each after looking at the dev client on the merged tree (`5ec8738`). Nothing was changed.
+
+**Approved as built**
+- **Fresh water** (items 34, 35, 36, 37):
+  - streams pale and part see-through, rivers dark and opaque, in the lakes' two colours;
+  - a visible current, as slow streaks carried downstream;
+  - white water wherever water drops, drawn as a steep slope of streaming foam (a sheer waterfall stays under "Kept for later");
+  - a gentler, irregular swell on all water.
+- **Zoomed-out savings** (items 38, 39): ground cover fades out between zoom 13 and 9.5 and wind sway between 15 and 10; the pixel ratio never goes below 1.
+- **The chunk worker's one visible cost** (item 40): an edit shows two frames later, not in the same frame, and the old mesh stays until then.
+- **Crowns over other explorers** (item 42): they thin over the three nearest, a little less than over you. Beyond three, an explorer in a wood shows only as a name label.
+- **The moon** (item 43): new to full and back over eight days, a new-moon night 28% darker than a full-moon one, and the moon's hours unchanged.
+- **The flower calendar** (item 44): buttercups and marsh marigolds in spring, thrift, oxeye daisies and cotton-grass in summer, harebells into autumn, none in winter.
+
+**Kept**
+- **The unit-test limit** (item 41): "Keep 15 s" (`vitest.config.ts`, up from 5 s).
+
 ### Waiting for Sid
-34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
-35. **A visible current on rivers and streams,** as slow streaks carried downstream.
-36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
-37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
-38. **Ground cover fades out between zoom 13 and 9.5,** and wind sway between 15 and 10 (milestone 8 step 2).
-39. **The pixel ratio never goes below 1,** so a screen whose own ratio is 1 is never made blurrier (milestone 8 step 2).
-40. **An edit shows two frames later, not in the same frame,** and the old mesh stays until then. In return no frame is ever spent building.
-41. **The limit for every unit test is 15 s, up from 5 s** (`vitest.config.ts`): see "Findings for Sid". Not an art decision, but outside this work's usual files.
-42. **Crowns thin over the three nearest other explorers,** a little less than over you (milestone 8 step 3). Beyond three, an explorer in a wood shows only as a name label.
-43. **The moon has phases:** new to full and back over eight days, and a new-moon night is 28% darker than a full-moon one, with fainter moon shadows and brighter stars (milestone 8 step 4). The moon's hours do not change.
-44. **Each flower keeps to its season:** buttercups and marsh marigolds in spring, thrift, oxeye daisies and cotton-grass in summer, harebells into autumn, none in winter (milestone 8 step 4).
+Nothing, as of 2026-11-13. New items continue from 45.
