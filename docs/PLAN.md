@@ -11,7 +11,7 @@ The world is endless, generated from a seed, and starts out **unknown**. Explore
 | Concern | Choice |
 |---|---|
 | Language | TypeScript everywhere (shared sim runs in browser + Node) |
-| Client | Vite + Three.js + vite-plugin-pwa, hosted on GitHub Pages |
+| Client | Vite + Three.js + vite-plugin-pwa. Where it is hosted is decided at M7 (not GitHub Pages) |
 | P2P transport | WebRTC data channels (unreliable for movement, reliable for ops) |
 | Signaling + zone directory | Small Node WebSocket server (VPS) |
 | NAT traversal | Public STUN + coturn TURN (VPS) |
@@ -40,12 +40,12 @@ infra/            docker-compose: signal + coturn + seed
 - **Limits**: a host holds every link to message-rate and size budgets, and paces catch-up itself (see M6).
 - **World edits**: signed ops in a per-chunk CRDT (last-writer-wins per tile, ordered by Lamport clock + public key). They're replicated to peers in the zone and to the seed.
 - **Discovery**: the signaling server keeps soft-state `world/zone → host` entries via heartbeats. It never sees gameplay. *Later:* replace it with a DHT or gossip.
-- **Join URL**: `https://<pages>/Terra-Ignota/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
+- **Join URL**: `https://<host>/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
 
 ## Milestones
 | # | Deliverable | Done when | Status |
 |---|---|---|---|
-| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. Deploy deferred to M7: the repo is private and the free plan has no Pages for private repos. Run locally for now |
+| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built, except the deploy. The Pages workflow was removed on 2026-11-13: Pages for a private repo needs a paid GitHub plan. Hosting is decided at M7. Run locally for now |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
@@ -315,7 +315,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **Identity is per device, not per player.** The Ed25519 key lives in IndexedDB, so clearing site data or switching devices makes a new identity. `peerId` is still a random id per tab, used only for connections.
 - **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 210 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
 - **The 300-bot target is unproven.** See the M6 results: stable at 100 bots on the dev machine, which runs out of CPU before 300.
-- **The deployed site is solo-only until M7.** Multiplayer on Pages needs the `SIGNAL_URL` repository variable, or `#signal=wss://…` in the link.
+- **Nothing is deployed.** The game runs from a local build or dev server. A build served over HTTPS has no signal server unless it was built with `VITE_SIGNAL_URL` or the link carries `#signal=wss://…`. To play from a phone before M7, serve a local build over Tailscale HTTPS (the README's "Deploy" section has the steps).
 
 ## Decisions
 | Decision | Why |
@@ -356,7 +356,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | One river span in ten is a ford | Sid's rule lets a river be crossed at a ford. Without any, a river from the mountains to the sea cuts the land in two until M5's bridges. |
 | Under a lake or in a channel, `elevationAt` is the water's surface | The renderer has one water surface, at sea level. Flat ground in a water colour reads as a lake; a dry pit in a water colour does not. `landAt` has the depth for when water is drawn properly. |
 | Rivers come from simulating each large region, not from carved noise lines | Sid asked for rivers shaped by gravity. Noise lines are cheaper but don't truly flow downhill. |
-| Pages deploy waits until M7 | Pages isn't available for private repos on the free plan, so the game runs locally until then. |
+| No GitHub Pages deploy; hosting is decided at M7 | Pages for a private repo needs a paid GitHub plan, which Sid doesn't have, and the workflow failed on every push to `main`. It was removed on 2026-11-13. The client is a static build, so any static host or the M7 server can carry it. |
 | Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |
 | A hand-written binary codec for the unreliable channel only; reliable messages stay JSON | Snapshots and position reports are almost all the traffic. A varint codec is about 250 lines and needs no dependency. Reliable messages are rare, and JSON keeps them easy to read and change. |
 | Positions are fixed point at 1/64 tile | Half a hundredth of a tile of error, below what's visible and inside what the e2e tests check, in 2 bytes per axis for anyone within 128 tiles of the message's origin. |

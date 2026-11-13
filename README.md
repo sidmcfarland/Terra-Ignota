@@ -39,4 +39,16 @@ apps/bots         headless bot swarm for load tests
 
 ## Deploy
 
-The client deploys to GitHub Pages from `main` (Settings → Pages → Source: GitHub Actions). Multiplayer on the deployed site needs a signaling server. Set the `SIGNAL_URL` repository variable to its `wss://` URL. Until then, the deployed site runs solo, unless someone adds `#signal=` to the link.
+Nothing is deployed yet. Where the client is hosted gets decided with the server work (M7 in `docs/PLAN.md`); it won't be GitHub Pages, which needs a paid plan for a private repository. The client is a static build (`npm run build`, output in `apps/client/dist`) that reads `BASE_PATH`, `VITE_SIGNAL_URL` and `VITE_TURN_URL` from the environment.
+
+The game signs edits with WebCrypto, so it only starts on `localhost` or over HTTPS. To play from a phone on your own Tailscale network:
+
+```sh
+npm run build
+npm -w @terra/signal start                                    # signal server on :8787
+npm -w @terra/client run preview -- --strictPort --port 4174  # set __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS to your machine's ts.net name first
+tailscale serve --bg --https=443 http://localhost:4174
+tailscale serve --bg --https=8443 http://localhost:8787
+```
+
+Then open `https://<machine>.<tailnet>.ts.net/#signal=wss://<machine>.<tailnet>.ts.net:8443`. `tailscale serve reset` turns both off.
