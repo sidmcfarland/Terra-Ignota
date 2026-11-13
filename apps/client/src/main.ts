@@ -77,11 +77,13 @@ async function main() {
   setInterval(() => void regions.around(self.x, self.y, REGION_AHEAD), 1000);
 
   const info: PlayerInfo = { id: cfg.peerId, name: cfg.name, hue: cfg.hue };
-  const input = new Input(view.canvas);
   let zoom = 20;
+  const zoomBy = (factor: number) => (zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor)));
+  // Zoom: the wheel with a mouse, a pinch with two fingers.
+  const input = new Input(view.canvas, zoomBy);
   view.canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * Math.pow(1.0015, -e.deltaY)));
+    zoomBy(Math.pow(1.0015, -e.deltaY));
   }, { passive: false });
 
   // The session follows the player across zone borders (see nextZone).
@@ -202,6 +204,7 @@ async function main() {
   (window as unknown as { __ti: unknown }).__ti = {
     cfg, self, session, tiles, edits, paint, author: identity.pub, view,
     setZoom: (z: number) => (zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))),
+    getZoom: () => zoom,
   };
 }
 
