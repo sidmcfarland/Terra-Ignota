@@ -18,7 +18,7 @@ import type { Air } from './air.ts';
 import { PixelRatioGovernor } from './governor.ts';
 import { Motes } from './motes.ts';
 import { Precipitation } from './precip.ts';
-import { Terrain } from './terrain.ts';
+import { Terrain, type RegionSource } from './terrain.ts';
 import { WEATHERS, type Season, type Weather } from './weather.ts';
 import { ZoneLines } from './zones.ts';
 
@@ -52,6 +52,10 @@ export interface PerfStats {
   /** Chunk meshes built so far, and the slowest build (ms). */
   chunkBuilds: number;
   chunkBuildMax: number;
+  /** Whether chunks are built on a worker (if not, the builds are on the main thread). */
+  chunkWorker: boolean;
+  /** Chunks in view that are not drawn yet. */
+  chunksMissing: number;
   pixelRatio: number;
 }
 
@@ -154,13 +158,17 @@ export class GameView {
   private fixedRatio: number | null = null;
   private lampDist = new Float64Array(LAMPS);
 
-  constructor(tiles: TileCache) {
+  /**
+   * `regions` is where drainage regions are computed ahead of need, if anywhere: the terrain shares them
+   * with its worker. `chunkWorker: false` builds chunk meshes on the main thread instead.
+   */
+  constructor(tiles: TileCache, regions: RegionSource | null = null, chunkWorker = true) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(this.governor.ratio);
     this.renderer.setClearColor(PALETTE.parchment);
     this.canvas = this.renderer.domElement;
 
-    this.terrain = new Terrain(tiles);
+    this.terrain = new Terrain(tiles, regions, chunkWorker);
     this.scene.add(this.terrain.group);
     this.zoneLines = new ZoneLines(tiles.seed);
     this.scene.add(this.zoneLines.group);
@@ -352,6 +360,8 @@ export class GameView {
       textures: info.memory.textures,
       chunkBuilds: this.terrain.buildMs.count,
       chunkBuildMax: this.terrain.buildMs.max,
+      chunkWorker: this.terrain.offThread,
+      chunksMissing: this.terrain.missing,
       pixelRatio: this.renderer.getPixelRatio(),
     };
   }

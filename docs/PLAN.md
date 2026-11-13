@@ -152,7 +152,7 @@ A real browser as the host (one headless Chromium tab hosting one zone, bots as 
 - **Renderer:** sheer cliffs need vertical faces in the chunk mesh. New water kinds (river, lake, sea) and new biomes need colours and ground cover. This answers two of the visual foundation's findings: "worldgen has one climate" and "sea and lake are the same tile".
 - **Movement:** today any tile that isn't deep water, snow or a wall is walkable, however steep. Cliffs and rivers need rules in `step()`.
 - **M5 design:** bridges and steps already exist to cross deep water and snow, so rivers and cliffs give them more to do. Landmark and resource placement should be built on the new terrain.
-- **Chunk building in a worker** (a visual foundation finding) was expected to become necessary. Step 1 turned out no slower than the old generator, and step 2 left chunk generation where it was (see the measurements below). What step 2 added is a worker for the drainage regions.
+- **Chunk building in a worker** (a visual foundation finding) was expected to become necessary. Step 1 turned out no slower than the old generator, and step 2 left chunk generation where it was (see the measurements below). What step 2 added is a worker for the drainage regions. The visual foundation has since moved chunk meshes to a worker of their own (milestone 8; see docs/ART_DIRECTION.md, "Chunk meshes off the main thread").
 
 **Decided (2026-11-12).**
 1. **Cliffs block.** Gentle and moderate slopes are walkable. Sheer cliff faces block like walls until a player builds Steps (from the M5 design). No slope-based slowing.
@@ -251,6 +251,7 @@ Then, tile by tile: a channel runs in smooth curves between the nodes' river poi
 
 **The worker.** A region takes about a quarter of a second, too long for the middle of a frame.
 - **Client:** `RegionLoader` (`apps/client/src/regions.ts`) has a worker compute every region within 640 tiles of the player, once a second, and the region the game starts in before the first frame. Tiles are still read synchronously: a region that is not ready is computed on the spot (`getRegion`), so nothing is ever provisional and `step()` and host checks always see the real world. That stall should only happen after a teleport.
+- **Chunk meshes:** the renderer starts the same worker script a second time to build chunk meshes (`render/chunk-data.ts`). `RegionLoader.onRegion` hands it each region as it is computed, so it does not compute them again; one that has not arrived is computed on the spot, in that worker.
 - **Bots:** no worker. Each process computes the region its zones are in once, at start-up, before it measures.
 - **Seed:** nothing. The seed never reads terrain.
 

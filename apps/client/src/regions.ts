@@ -13,6 +13,9 @@ export class RegionLoader {
   private readonly waiting: Array<[number, number]> = [];
   /** Regions asked for and not yet installed. */
   private readonly asked = new Map<string, { promise: Promise<void>; done: () => void }>();
+  /** Who else wants each region a worker computes (the chunk-mesh worker), and the last few that were computed. */
+  private readonly listeners: Array<(r: Region) => void> = [];
+  private readonly delivered: Array<[number, number]> = [];
 
   constructor(seed: number, workers = 1) {
     this.seed = seed;
@@ -21,6 +24,9 @@ export class RegionLoader {
         const w = new Worker(new URL('./terrain-worker.ts', import.meta.url), { type: 'module' });
         w.onmessage = (e: MessageEvent<Region>) => {
           installRegion(e.data);
+          this.delivered.push([e.data.rx, e.data.ry]);
+          if (this.delivered.length > 32) this.delivered.shift();
+          for (const fn of this.listeners) fn(e.data);
           this.settle(e.data.rx, e.data.ry);
           this.idle.push(w);
           this.pump();
@@ -37,6 +43,15 @@ export class RegionLoader {
         // No workers here: regions are computed on the spot.
       }
     }
+  }
+
+  /**
+   * Call `fn` with every region a worker computes from now on, and first with the ones already computed
+   * that are still held. For handing regions on to another worker, so it need not compute them again.
+   */
+  onRegion(fn: (r: Region) => void) {
+    this.listeners.push(fn);
+    for (const [rx, ry] of this.delivered) if (hasRegion(this.seed, rx, ry)) fn(getRegion(this.seed, rx, ry));
   }
 
   /** Resolves once the region is in the shared cache. */

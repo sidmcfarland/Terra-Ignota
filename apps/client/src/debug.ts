@@ -99,7 +99,7 @@ function perfLines({ perf, hour, wind, weather, season }: DebugState): string[] 
     `FRAME  ${perf.frameMs.toFixed(1)}ms avg  ·  ${perf.frameP95.toFixed(1)}ms p95  ·  ${Math.round(1000 / (perf.frameMs || 1))} fps`,
     `       cpu ${perf.cpuMs.toFixed(1)}ms avg, ${perf.cpuMax.toFixed(1)}ms worst  ·  pixel ratio ${perf.pixelRatio}`,
     `DRAW   ${perf.drawCalls} calls  ·  ${k(perf.triangles)} triangles  ·  ${perf.geometries} geometries  ·  ${perf.textures} textures`,
-    `CHUNKS ${perf.chunkBuilds} built  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms`,
+    `CHUNKS ${perf.chunkBuilds} built ${perf.chunkWorker ? 'on a worker' : 'on the main thread'}  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms  ·  ${perf.chunksMissing} missing`,
     `TIME   ${clock}  ·  #time=dawn|morning|noon|afternoon|golden|sunset|dusk|night or an hour holds it`,
     `WIND   ${(wind ?? 0).toFixed(2)}  ·  #wind=0..1 holds it`,
     `SKY    ${amounts(weather)}  ·  #weather=clear|broken|overcast|rain|storm|fog|snow holds it`,

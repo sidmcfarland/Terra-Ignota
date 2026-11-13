@@ -43,7 +43,9 @@ async function main() {
   const regions = new RegionLoader(tiles.seed);
   const start = inviteSpot() ?? { x: ZONE_TILES / 2, y: ZONE_TILES / 2 };
   await regions.around(start.x, start.y, REGION_AHEAD);
-  const view = new GameView(tiles);
+  // `#chunks=main` builds chunk meshes on the main thread, as the game did before it had a worker for them:
+  // for comparing the two on a device.
+  const view = new GameView(tiles, regions, new URLSearchParams(location.hash.slice(1)).get('chunks') !== 'main');
   // `#time=dawn` (or an hour, `#time=16.5`) holds the light still; without it the day follows the clock.
   view.setHour(parseTime(new URLSearchParams(location.hash.slice(1)).get('time')));
   // `#wind=0.8` holds the wind at a strength (0 to 1); without it the wind wanders with the clock.
