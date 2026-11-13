@@ -68,7 +68,7 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Desert | `#D4AA70` | `#E8C488` | Apricot and ochre, deeper than the pale beach. Dune ripples cross it |
 | Tundra | `#829074` | `#A28E6E` | Lichen green drifting into russet heath. Frost `#E2E8EE` lies in patches all year |
 | Cliff | `#A8967E` | `#BEAC92` | Warm buff stone with darker bedding seams |
-| Stream bed, river bed | `#969680`, `#3A4E54` | `#AAA488`, `#42585A` | Ready for M4c step 2; nothing generates them yet |
+| Stream bed, river bed | `#969680`, `#3A4E54` | `#AAA488`, `#42585A` | Pebbles under a stream, seen through its water; a dark bed under a river, hidden by it |
 | Path (player-made) | `#B89C74` | | Drawn crisp, never blended |
 | Wall (player-made) | `#68625A` | | Drawn crisp, never blended |
 | Bare earth (steep green slopes) | `#9E8666` | | Faces too steep to hold grass |
@@ -79,7 +79,7 @@ Each ground tile has **two tones**. Patches of land drift between them on a slow
 | Water, shallow | `#7FC0BD` | Blends to deep over 2.4 tiles of depth; 60–96% opaque |
 | Water, deep | `#2F6687` | |
 | Lake water, shallow | `#8FB89A` | Greener than the sea |
-| Lake water, deep | `#2A5458` | Darker and greener. A lake lies stiller than the sea and has only a thin pale line at its edge, no surf |
+| Lake water, deep | `#2A5458` | Darker and greener. A lake lies stiller than the sea and has only a thin pale line at its edge, no surf. Rivers and streams use the same two colours: all fresh water is one family |
 | Shore foam | `#F4EFE2` | A thin line that breathes in and out |
 | Broadleaf crown | `#41653F` to `#8AA65A` | Ramp from the shaded underside to the sunlit top. Each tree is tinted a little cooler or warmer by where it stands |
 | Pine | `#2C4A3D` to `#587D5E` | Darker and bluer than broadleaf, so a stand of pine reads at a glance |
@@ -139,13 +139,39 @@ The colours of the light change through the day. They are in "Time of day" below
 | Moonlit night | 21.5 | Moon `#A9C4F0` | Deep blue `#6E86B8` | 0.25 | Blue-green and quiet, with moon shadows. Never dark |
 
 - **The sun is up from 6 to 18.** It rises east-south-east, leans south at midday (52° at its highest) and sets west-north-west.
-- **The moon follows the same arc twelve hours behind,** so it rises as the sun sets. The terrain's baked shadows therefore serve both, and a moonlit night has long soft shadows of its own. The moon is always full; phases are for later.
+- **The moon follows the same arc twelve hours behind,** so it rises as the sun sets. The terrain's baked shadows therefore serve both, and a moonlit night has long soft shadows of its own.
+- **The moon has phases** (milestone 8). It goes from new to full and back over eight days (6.4 hours of play), read from the wall clock like the hour, so every explorer has the same moon. The night in the table is a full moon's. With less moon:
+  - the moon's own light weakens, to a quarter under a new moon, so moon shadows fade but starlight still gives the land its form;
+  - open ground darkens, by 28% under a new moon (0.18 against 0.25);
+  - the moon's glint leaves the water and the stars lying in it show half as bright again;
+  - lanterns are unchanged, so they matter more.
+  - Sundown and first light are the same under any moon: the dark comes on with the night.
+  - `#moon=new|crescent|half|gibbous|full` (or how much is lit, 0 to 1) holds a phase; `window.__ti.view.setMoon(lit)` does the same and `null` hands it back to the clock.
 - **The key light changes hands below the horizon.** As either body meets the horizon its light fades to nothing, so dusk and first light are lit by the sky alone.
-- **Night is never dark.** Open ground at night is about a quarter as bright as in the afternoon (roughly half as bright to the eye). The picture is cooled and desaturated as the level falls, the way eyes see by moonlight.
+- **Night is never dark.** Open ground at night is about a quarter as bright as in the afternoon (roughly half as bright to the eye), and a little under a fifth under a new moon. The picture is cooled and desaturated as the level falls, the way eyes see by moonlight.
 - **The parchment takes the light too,** but only half its colour, so the map dims to slate at night and warms at sunset while staying paper.
 - **Every explorer carries a lantern.** From sunset to just after sunrise a warm pool of light (`#FFAE62`, reaching 7.5 tiles) surrounds each explorer and flickers slightly. It lights the ground, trees, water and the piece itself. Yours always shows; up to three more go to the nearest other explorers. At night, another explorer is a warm light in the distance: company, in keeping with "shared, not lonely".
 - **The day follows the wall clock, not the network.** One day lasts 48 real minutes and every explorer reads the same hour from their own clock. Nothing is sent. The hours are not spent evenly: the day lingers at dawn (about 5 minutes) and through the golden hour and sunset (about 8), and hurries through noon (about 5) and the night (about 10 of the 48).
 - **`#time=`** holds the light still: a name (`dawn`, `morning`, `noon`, `afternoon`, `golden`, `sunset`, `dusk`, `night`) or an hour such as `#time=16.5`. `window.__ti.view.setHour(h)` does the same; `setHour(null)` returns to the clock. The debug panel shows the hour.
+
+## Water
+**Built in visual-foundation milestones 1, 7 and 8 (2026-11-12). The sea and the lakes' colours are Decided; the rivers, streams and raised lakes of milestone 8 are awaiting Sid.** The code is the water shader in `look.ts` and the height field and water mesh in `terrain.ts`.
+
+- **Every water stands at its own level.** The sea is at height 0. A lake stands wherever its basin filled, a river falls along its course, and each is drawn there. The generator (M4c step 2) gives the surface; the renderer gives each corner of the map a ground height and, where it is wet, a water level.
+- **How deep it is drawn.**
+  | Water | Depth | What you see |
+  |---|---|---|
+  | Sea | The sea bed's own, about 1.3 tiles where it turns deep | Teal shallows to deep blue |
+  | Lake | The generator's depth, drawn 8 tiles to its unit, as under the sea | Jade shallows over silt, dark green-teal over peat |
+  | Stream | 0.22 of a tile | Pale, part see-through: the pebbled bed shows, stones break the surface, a few reeds stand at the edge. It looks wadeable, and is |
+  | River | 0.9 of a tile | Dark and opaque: the bed is hidden. It looks deep, and blocks |
+- **Fresh water darkens with depth sooner than the sea,** so a river a tile deep already reads as deep.
+- **The current shows.** Streaks of lighter and darker water are drawn out along a river or stream and carried down it, about a tile and a half a second. The direction comes from the generator's channel spans. Lakes and the sea have none.
+- **White water.** Where the water's own surface is steep (a river dropping over a step, one lake spilling into another, a river falling to the sea), it breaks into foam that streams down the drop. This is read from the surface's slope, so it needs no data of its own.
+- **The shoreline is cut by the land.** The water's surface is carried through the dry corners beside it at the level of the nearest water, so it runs flat under the bank and the ground itself makes the edge. That is how the sea's shore has always worked; it now works at any height.
+- **An explorer wades** a quarter of a tile under the surface of whatever water they stand in.
+- **The swell comes from real noise.** The surface heaves by the grain texture read at two scales that drift against each other. It was two sine waves, whose crests fell into rows; the sun's glint then lit the sea in a regular pattern of white patches (found in milestone 8, the same fault as the snow's polka dots).
+- **Snow does not lie on a lake's or river's bed.** The ground mesh carries a flag for "under water".
 
 ## Wind
 **Decided.** Chosen in visual-foundation milestone 4 and approved by Sid on 2026-11-12. The code is `apps/client/src/render/wind.ts` (direction and strength from the clock) and `windAt` in `look.ts` (the field every shader samples).
@@ -160,6 +186,7 @@ The colours of the light change through the day. They are in "Time of day" below
 - **It follows the wall clock, not the network,** like the time of day. Every explorer feels the same breeze.
 - **`#wind=0.8`** holds the wind at a strength from the prevailing direction; `window.__ti.view.setWind(s)` does the same and `setWind(null)` returns to the clock. The debug panel shows the strength.
 - **Tree crowns thin out where they would hide you.** Crowns standing between your explorer and the eye are drawn as a faint scatter of their own pixels, so you can see yourself among the trunks. There is no blending and no sorting.
+- **They thin over other explorers too** (milestone 8): the three nearest, the same ones whose lanterns show. The opening is a little smaller than your own and its crowns a little less bare (three pixels in ten kept at its heart, against two in ten over you), so you stay the subject. Company is not lost under the canopy.
 
 ## Weather and seasons
 **Decided.** Chosen in visual-foundation milestone 5 and approved by Sid on 2026-11-12, with the year's length set by him and the snow's drifts corrected (both below). The code is `apps/client/src/render/weather.ts` (the sky and the year, from the clock), the `Look` class in `look.ts` (which bends the lights, wind and mist by them), the season and snow code in the ground and foliage shaders, and `precip.ts` (rain and snow in the air).
@@ -188,6 +215,18 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Snow is a rule in the shader, not new geometry.** Each surface whitens by how far it faces the sky and by where the drifts lie, so cover comes and goes in patches as the amount changes. Nothing is rebuilt.
 - **Drifts come from real noise, and from the land.** Where snow lies is read from the paper's grain texture at two scales, which gives broad drifts with ragged edges and no pattern. Snow also goes first from slopes that face the midday sun. (The first version summed three sine waves. Cut off at a level, that leaves round bare patches in rows; Sid saw them as polka dots, and it was replaced on 2026-11-12.) **Rule for anything that covers or clears ground in patches: use the grain texture or other real noise, never a sum of a few sine waves.**
 - **The seasons recolour by rule too:** anything green shifts, and sand, rock and what players build do not.
+- **Flowers keep to their seasons** (milestone 8). Each kind is out in its own part of the year (the shares below are rough), and comes and goes flower by flower, each a little earlier or later than its neighbours, rising as it opens. Nothing flowers in winter.
+
+  | Flower | Where | Spring | Summer | Autumn |
+  |---|---|---|---|---|
+  | Buttercup (yellow) | Grass and meadow | All | Six in ten | None |
+  | Marsh marigold (yellow) | Marsh | All | Three in ten | None |
+  | Thrift (pink) | The shore | Seven in ten | All | A few |
+  | Oxeye daisy (white) | Grass and meadow | Half | All | A quarter |
+  | Cotton-grass (white) | Tundra and marsh | Three in ten | All | Four in ten |
+  | Harebell (lilac) | Meadow | None | Eight in ten | All |
+
+  So a meadow is yellow in spring, white and lilac in summer, and thinly lilac in autumn. The table is `bloomsAt` in `weather.ts`. A flower's vertices carry its kind, and the shader leaves out the ones not in season; where every flower stands is unchanged from before.
 - **Rain and snow are one mesh** of 480 small quads that fall through a box around the explorer and wrap. The vertex shader places every one. Nothing falls on the blank map: weather belongs to the land.
 - **`#weather=clear|broken|overcast|rain|storm|fog|snow`** and **`#season=spring|summer|autumn|winter`** (or a point in the year from 0 to 4) hold them still. `window.__ti.view.setWeather(name)` and `setSeason(year)` do the same; pass `null` to return to the clock. The debug panel shows both.
 
@@ -246,7 +285,7 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Decoration must be deterministic.** Anything placed on the world (trees, rocks, grass) is derived from the seed and position, so every player sees the same place. It is client-only and must not affect walkability or any rule in `packages/shared`.
 - **`packages/shared` stays isomorphic:** no DOM or Three.js there.
 - **`#render=0` must keep working.** The e2e tests load the game without rendering.
-- **Players can edit tiles** (Path, Wall, back to generated). A chunk's mesh is rebuilt when an edit lands, so chunk builds must stay fast.
+- **Players can edit tiles** (Path, Wall, back to generated). A chunk's mesh is rebuilt when an edit lands. The rebuild jumps the queue and the old mesh stays on show until the new one is ready, two frames later on the development machine.
 
 **Every asset and effect has a performance budget and stays within it.** Prefer techniques that look expensive but are cheap: baked or vertex lighting, gradient ramps, vertex animation, texture atlases, instancing, LODs, shader tricks over geometry.
 
@@ -256,16 +295,16 @@ The colours of the light change through the day. They are in "Time of day" below
 | Frame time | 12 ms or less, leaving headroom under 16.6 ms |
 | Draw calls | 150 or fewer |
 | Visible triangles | 300k or fewer |
-| Pixel ratio | Capped at 2 today; consider 1.5 on phones |
+| Pixel ratio | The screen's own, capped at 2; lowered step by step towards 1 while frames run late, and raised again when they do not (see "Where the renderer is today") |
 | Full-screen passes | One at most beyond the main render |
 | Real-time shadow maps | None, or one at 1024 px, only if it measures within budget |
 | Texture memory | 32 MB or less in total |
 | Particles | 500 or fewer, instanced, in one or two draw calls |
-| Chunk build | Must not drop a frame; builds are capped per frame today |
+| Chunk build | No main-thread time: chunks are built in a worker. Turning finished chunks into meshes (three a frame at most) must not drop a frame |
 
 **Performance can't be measured on a real phone from a development session.** Use draw-call and triangle counts from `renderer.info`, frame times with CPU throttling, and say plainly that a real-device check is still owed.
 
-**How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles and chunk build times. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
+**How to measure.** The debug panel (F3) shows frame time, main-thread time, draw calls, triangles, chunk build times (and whether they run on the worker) and how many chunks in view are not drawn yet. `window.__ti.view.perf` returns the same numbers, and `window.__ti.view.bench(120)` renders frames back to back, waiting for the GPU each time, so it shows headroom the display's refresh rate hides. The latest measurements are in "Visual foundation backlog".
 
 ## Where the renderer is today
 As of visual-foundation milestone 7 (2026-11-12). Update this section as the visual foundation lands.
@@ -273,14 +312,28 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/look.ts`: **the look.** The palette, the shared uniforms (key light, sky fill, ground bounce, lanterns, the light on the parchment, grade, time, the known-world circle) and the master shaders every surface uses: ground, foliage (trees and ground cover), water, parchment, solid (avatars) and the soft blob shadow. New surfaces should be built from these, not from Three.js's stock materials, so they take the same light, lanterns, grade and ink-in.
 - `apps/client/src/render/air.ts`: **the atmosphere** (milestone 6): how much dust, leaf-fall, fireflies, starlight and dawn mist the moment calls for, as plain numbers with unit tests. `apps/client/src/render/motes.ts` draws the specks: one instanced mesh, one draw call. See "Atmosphere".
 - **Shader work that is not needed is skipped.** Snow, mist, cloud shadows, lantern light, rain rings and stars each sit behind a test of their own amount, so a clear summer afternoon pays for none of them.
+- **Small things are dropped when the view is too far out to show them** (milestone 8). Zoom is CSS pixels to a tile, from 8 to 48.
+  - **Ground cover** sinks into the ground between zoom 13 and 9.5, where a blade of grass is under three pixels tall, and below that its meshes are not drawn at all. Fully zoomed out this removes a third to a half of the triangles on open ground.
+  - **Wind sway** stills between zoom 15 and 10, where a crown moves less than a pixel, and below that the wind is not worked out in the foliage shader at all.
+  - Both fade, so nothing pops. In screenshots the land at zoom 9 without cover cannot be told from zoom 11 with it.
+- **The canvas's pixel ratio follows the measured frame time** (`governor.ts`, milestone 8). A phone's frame cost is mostly pixels, and a ratio of 2 is four times the pixels of 1. When more than two frames in five run late for three quarters of a second, the ratio drops by 15%, down to 1 at the least. When frames have been on time for about five seconds, and no drop happened in the last half minute, it rises again. A ratio that proves too much is tried again less and less often, so it settles. A hidden tab, a single long frame and the first second and a half are ignored. A screen whose own ratio is 1 is never changed. `#pr=1.5` holds a ratio; `window.__ti.view.setPixelRatio(r)` does the same and `null` hands it back. The debug panel shows the ratio in force.
 - `apps/client/src/render/weather.ts`: **the weather and the seasons** (milestone 5), as plain numbers with unit tests. `apps/client/src/render/precip.ts` is the rain and snow in the air: one mesh, one draw call. See "Weather and seasons".
 - `apps/client/src/render/wind.ts`: **the wind** (milestone 4). Direction and strength from the wall clock, as plain numbers with unit tests. The field itself (`windAt`) is in `look.ts`'s shared vertex code. See "Wind".
-- `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day".
+- `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day". The moon's phase (`moonAt`) and what it does to a night's light (`moonOn`) are here too (milestone 8).
 - **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
 - **Shadows and ambient occlusion are baked when a chunk is built.** Each vertex stores how high the land (and forest canopy) rises toward the morning sun and toward the evening sun. The shader compares that with the sun's elevation, so long soft shadows follow the time of day for one byte per vertex per direction. The morning horizon is used until midday and the evening one after it, for the sun and for the moon alike.
 - **The known world is a circle around the player** (44 tiles, `REVEAL_RADIUS`). Beyond it is blank parchment with a faint hand-ruled graticule every 64 tiles. In the 15-tile fringe the land is first a flat ink wash inside an inked outline, then rises as a pale paper relief, then takes its colour. This stands in for M5's explored area: M5 should replace `revealAt` in `look.ts` with a lookup of what has been explored.
-- `apps/client/src/render/terrain.ts`: heightmap chunks streamed around the player, only inside the known world. Tile corners are nudged off the grid and each tile is split along its flatter diagonal, so the land reads as hand-cut facets. Water is its own mesh, built only where there is water, on the same corners as the ground so the shoreline lines up; it is tinted by depth, faceted by its own ripples, glints in the sun and has a foam line that laps at the shore. Steep hillsides show bare earth or stone in bands that follow the slope. Sand the water has just left is darker (the strand).
-- `apps/client/src/render/flora.ts` and the `adorn` rules in `terrain.ts`: **what grows on the land** (milestone 2). Everything is decided from `(seed, x, y)`, is client-only and never affects walkability. A tile a player has edited is bare.
+- **Chunk meshes are built in a worker** (milestone 8), so a frame never waits for one.
+  - `apps/client/src/render/chunk-data.ts` works a chunk's mesh out as plain typed arrays: ground, cliffs, baked shadows, water, ground cover (`cover.ts`) and where its trees stand. **It must not use three.js or the DOM,** because it runs in the worker; a unit test checks its imports.
+  - `apps/client/src/terrain-worker.ts` runs it. The same script also computes drainage regions for `RegionLoader`; the game starts it twice, once for each job, so a region (a quarter of a second) never holds up a chunk.
+  - `apps/client/src/render/terrain.ts` asks for chunks and turns the answers into geometries, which is cheap: the arrays are handed over, not copied, and go to the GPU as they are.
+  - **Order:** a chunk an edit has changed first, then the nearest. Two are in the worker at a time, so it always has the next one waiting.
+  - **Chunks are asked for 8 tiles before the view reaches them** and kept hidden until it does, so the worker's answer is never seen arriving. A chunk that no longer touches the view is hidden too (it was drawn before, as blank parchment).
+  - **Regions are shared, not computed twice:** `RegionLoader` hands each region it computes to the chunk worker. A chunk whose region has not arrived computes it on the spot, in the worker.
+  - A chunk's corner heights come back with its mesh, so the main thread does not work them out again for standing explorers on the ground.
+  - **Without a worker** (it failed to start, or `#chunks=main`) the same builder runs on the main thread, 4 ms a frame at most, as before.
+- **The land is heightmap chunks** streamed around the player, only inside the known world. Tile corners are nudged off the grid and each tile is split along its flatter diagonal, so the land reads as hand-cut facets. Steep hillsides show bare earth or stone in bands that follow the slope. Ground the water has just left is darker (the strand). **Water** is its own mesh, built only where there is some, on the same corners as the ground so the shoreline lines up; each corner carries its own level (see "Water"). `Terrain.heightAt` is the ground (the bed, under water), `waterAt` the water's surface over a spot and `surfaceAt` the top of whichever is higher.
+- `apps/client/src/render/flora.ts` (the tree models), `cover.ts` (the ground-cover builder) and the `adorn` rules in `chunk-data.ts`: **what grows on the land** (milestone 2). Everything is decided from `(seed, x, y)`, is client-only and never affects walkability. A tile a player has edited is bare.
   - **Trees are instanced:** a broadleaf (31 triangles: trunk, a faceted crown and a side lobe) and a pine (21 triangles: trunk and three drooping tiers). About two forest tiles in three hold a tree, so the forest floor shows between them. Each is turned, stretched and tinted differently. Broadleaves fill the lowlands and pines take over as the land climbs, with the odd stand of each among the other. A few lone trees stand in open grass and cast a soft baked shadow.
   - **Ground cover is one merged mesh per chunk** (one draw call): grass tufts that thicken in the lusher patches, taller golden tufts and flower colonies in meadows, ferns and bushes on the forest floor, marram grass and pebbles on the beach, reed beds with seed heads in the shallows, stones that break the water, boulders and stunted pines on rock, dark stones in the snow.
   - Both use one vertex layout whose colour carries each vertex's height above its root (`lift`). The shader uses it to grow things out of the map at the edge of the known world, and the wind uses it to move tips more than roots.
@@ -289,7 +342,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 - `apps/client/src/render/zones.ts`: debug-only zone border lines. They follow the true ground height, so they float over the flattened fringe.
 - **Biomes come from worldgen's tiles** (M4c): sea and lake (each deep and shallow), sand, grass, broadleaf forest, conifer forest, meadow, marsh, desert, tundra, rock, cliff and snow. Each has two ground tones, its own plants, and its own rules in `adorn`. Where two meet, the facets between them take a mix of both, so there are no hard borders except cliffs.
 - **Heights come from the shared rule's own curve** (`heightOf`), so a tile the rules call a cliff is drawn exactly as steep as the rule measured it.
-- **Cliffs are sheer** (milestone 8). A cliff tile is not one steep slope: a vertical wall runs through it, with level ground above and below. How it is built, in `terrain.ts` (`cliffTile`):
+- **Cliffs are sheer** (milestone 8). A cliff tile is not one steep slope: a vertical wall runs through it, with level ground above and below. How it is built, in `chunk-data.ts` (`cliffTile`):
   - Every corner near a cliff is on the upper or the lower side of the drop, by whether it stands above or below the middle of the heights around it.
   - The wall crosses each edge of a cliff tile that joins an upper corner to a lower one, half-way along, so it follows the cliff's contour from tile to tile and turns corners with it.
   - A corner that only cliff tiles touch is moved to the level, and takes the colours, of the open ground on its own side. Grass then runs to the cliff's edge and the beach to its foot, and the wall takes the whole drop.
@@ -336,7 +389,14 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Each new biome is told apart by its ground first, its plants second, and by what is missing | A desert reads from its dunes and bare sand, tundra from frost and the lack of anything tall, marsh from dark pools and sedge. No new models were needed, so the world stays one family. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Lakes differ from the sea in the water itself: greener, darker, stiller, edged with reeds and no surf | A lake and a sea bay should never be confused at a glance, and the difference should be visible from far out. Approved by Sid, 2026-11-12. |
 | 2026-11-12 | Cliffs show bedding: level seams drawn by the ground shader from the height of each pixel | A bare steep facet is a grey smear. Seams that run level across a whole escarpment make it read as rock and as one continuous wall. It costs a few operations per pixel and no texture. Approved by Sid, 2026-11-12. |
-| 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Awaiting Sid. |
+| 2026-11-12 | Cliffs are sheer walls cut through cliff tiles along the drop's contour; open ground keeps its true heights | Sid asked for sheer cliffs. Reshaping only what nobody can stand on means an explorer is always drawn on the heights the rest of the game uses, and what looks like a wall is exactly what blocks. Decided by Sid, 2026-11-12: "Keep it ragged". |
+| 2026-11-12 | Ground cover and wind sway fade out as the view zooms out, and the work for them is skipped | A blade under three pixels and a sway under one cannot be seen, and fully zoomed out is the heaviest view. Sid's steer for milestone 8. |
+| 2026-11-12 | The pixel ratio follows measured frame time, between the screen's own (capped at 2) and 1 | Pixels are most of a phone's frame cost, and sharpness is the cheapest thing to trade for 60 frames a second. Sid's steer for milestone 8. |
+| 2026-11-12 | Chunk meshes are built in a worker, asked for 8 tiles ahead of the view, and shown in place of the old mesh when ready | Building a chunk was the last main-thread cost that scaled with the device: 4 to 30 ms here, several times that on a phone. Sid's steer for milestone 8. |
+| 2026-11-12 | The chunk worker and the region worker are one script started twice, and regions are handed from one to the other | One worker for both would stall chunks for a quarter of a second (more on a phone) whenever a region is computed; two that each computed regions would do that work twice. |
+| 2026-11-12 | Crowns thin over the three nearest other explorers, as they do over your own | "Shared, not lonely": another explorer should read as company, not vanish in a wood. It reuses the lantern positions the shaders already have, so it adds no uniforms and no draw calls. Sid's steer for milestone 8. |
+| 2026-11-12 | The moon has phases over an eight-day month, and they change only how bright the night is | A different night each time you play, for no cost. Keeping the moon's hours fixed keeps the approved rule that it rises as the sun sets, and the baked shadows with it. |
+| 2026-11-12 | Each flower keeps to its season, decided in the shader from a kind carried on its vertices | The seasons were recolouring the land while its flowers stayed out all year. A table of numbers and one byte per vertex, with nothing rebuilt as the year turns. |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
@@ -362,21 +422,23 @@ The order is by how much each step decides the look of everything after it. Each
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
 | 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
-| 8 | **Finishing:** in the order Sid set on 2026-11-12: (1) sheer cliff faces, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1) done.** (2) next |
+| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **Done:** (1), (1b), (2), the chunk-mesh worker, (3), and for (4) moon phases and flowers in season. What is left is under "Kept for later" |
 
 ### Kept for later (found along the way)
-- **Chunk generation belongs in a worker.** This is the biggest known risk to 60 fps on a phone: building a chunk's mesh takes about 4 to 5 ms here on a desktop, plus generating its tiles and heights, so a phone will drop a frame each time new chunks stream in. It is sliced to at most about 4 ms a frame, which is not a fix. **On hold (Sid, 2026-11-12):** M4c step 2 is adding a worker for river regions, so this waits until that is merged and then shares it.
-- **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do.
+- **Tiles near the player are still generated on the main thread,** a chunk at a time, because movement reads them synchronously (`step()`): 1.2 ms a chunk here (3.6 ms at worst), about one chunk for every 32 tiles walked. The harness does not time this (it is in the game's own loop, not in `view.frame()`). The heights under a spot no built chunk covers yet are also worked out on the main thread; in the measured runs that never happened.
+- **Short pauses remain that are not chunks.** With the worker, the slowest frame in a 10-second run was 6 to 23 ms, in a frame where no chunk arrived and nothing was generated: most likely the browser collecting garbage. Chunk data is the largest thing allocated and freed as the land streams by.
+- **Trees are still every tree at any zoom** (see "No level of detail for trees").
+- **A cliff's rim and foot are a little ragged.** Next to the wall, the open ground and the wall-less cliff tiles keep their true heights, which tilt by up to a tile. A few facets there catch the light differently and read as notches. Smoothing them means reshaping ground an explorer can stand on, which this milestone chose not to do. **Sid chose to keep it this way (2026-11-12): "Keep it ragged".** This is settled, not a loose end.
 - **A diagonal terrace is a run of short walls and banks,** not one straight face, because each wall has to end on a tile's edge. It reads as a rocky step.
 - **Walls cast no shadow of their own.** Shadows are still baked from the height field, which sees the cliff as the slope it used to be. The shade is roughly right and softer than a sheer face would cast.
-- **Pixel ratio on phones.** Still capped at 2. Try 1.5, or scale it by measured frame time.
+- **A waterfall is a ramp, not a fall.** Where a river drops several tiles in one, the water is one steep facet of streaming foam. A sheer fall would need the cliff builder to carry water.
+- **Mist does not gather on a mountain lake.** It lies below a fixed height, measured from the sea.
+- **Water does not freeze** (already listed), and a river in winter runs between snowy banks unchanged.
 - **Avatars** are a placeholder playing piece. Real characters wait for M5.
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
-- **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), but only for your own explorer: others still disappear under the canopy.
-- **The wind is computed for every plant even when zoomed out,** where the sway is smaller than a pixel. If a phone's vertex load is too high, fade the sway out below about 12 pixels a tile and keep only the sheen.
+- **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), nor the three nearest other explorers (milestone 8). A fourth and any further still disappear under the canopy, though their name labels show.
 - **Water does not freeze** in winter, and rain makes no splash on the ground.
 - **A bare tree is a thinner, twig-coloured crown,** not branches. It reads at the game's scale; a real winter model would be better up close.
-- **Flowers bloom all year** except under snow. Tying each kind to its season needs a flag on the vertex.
 - **The season rule finds green by colour,** so the golden meadow does not turn. A per-vertex "this grows" flag would be exact.
 - **Rain is not stopped by tree crowns or hills:** a streak can be seen falling through a canopy.
 - **Lanterns do not come on in a dark storm by day.**
@@ -384,12 +446,13 @@ The order is by how much each step decides the look of everything after it. Each
 - **No new tree for the new biomes.** Conifer forest uses the existing pine, taller and closer. A birch for the tundra's edge or a thorn tree for the desert would add variety; neither was needed to tell the biomes apart.
 - **The desert has no cactus or palm.** It is dry scrub, which suits a temperate map. An oasis (palms by desert water) could come when rivers do.
 - **Snow on tundra is the same as snow anywhere.** Tundra should hold snow earlier and longer than the lowlands. That needs a per-vertex climate value.
-- **No level of detail.** Fully zoomed out, every tuft is still drawn (about 100–130k triangles). It is within budget; if a phone struggles, drop ground cover when zoomed out first.
+- **No level of detail for trees.** Ground cover and sway are dropped when zoomed out (milestone 8); every tree is still drawn at any zoom. Trees are most of the triangles in a forest (133k fully zoomed out in conifer forest). A cheaper far tree is the next lever if a phone needs one.
+- **The pixel ratio governor has not met a real phone.** Its thresholds (what counts as late, how long to wait) are reasoned, and unit-tested against made-up frame times, not tuned on a device.
 - **Zone debug lines** float over the flattened fringe.
 - **Fireflies and dust do not know what is under them** beyond its height: fireflies drift over open water and sand as readily as over grass.
 - **Motes are not lit by lanterns or shaded by hills.**
 - **Cloud shadows do not fall on the parchment** or on the rain.
-- **The moon is always full.** Phases would change how bright each night is.
+- **The moon's phase changes how bright the night is, not when the moon is up.** It still rises as the sun sets, whatever its phase, so the baked shadows go on serving it. There is no moon to see: the view never shows the sky.
 - **The playing piece has no lantern on it.** The light simply centres on the piece. A real character (M5) should carry one.
 - **Only four lanterns light the land at once** (yours and the three nearest). A crowd of explorers at night would need a cheaper way to show the rest, such as a glow sprite.
 - **Lantern light is not shadowed.** It passes through hills and trees. It reaches 7.5 tiles, so this is hard to see.
@@ -404,7 +467,14 @@ The order is by how much each step decides the look of everything after it. Each
 - **The renderer drew the land on a different curve from the one the rules use** (found in milestone 7). M4c's shared rule calls a tile a cliff when its corners differ by more than 1.2 tiles on the curve `heightOf` (30·u^1.5). The renderer was still drawing with its own older curve (30·u^1.6), so a cliff was drawn a little less steep than the rule measured. The renderer now calls `heightOf`, so what blocks you is exactly what you see. Mountains are about 5% taller as a result.
 - **This branch is `main` plus milestone 7.** `main` was merged in on 2026-11-12 as a fast-forward (it already held milestones 1 to 6), which brought protocol 8. `npm run e2e` now takes its ports from the environment, so this worktree runs it beside the main checkout with `E2E_SIGNAL_PORT=8797 E2E_SEED_PORT=8798 E2E_CLIENT_PORT=4174 E2E_REUSE=0 npm run e2e`.
 - **Cliffs were steep slopes, not vertical faces.** Fixed in milestone 8: see "Cliffs are sheer" above.
-- **Streams and rivers have colours but have not been seen.** Nothing generates them until M4c step 2, so their look is untested.
+- **Streams, rivers and raised lakes had no water** until milestone 8: the renderer drew one water surface at sea level, so they showed as ground in a flat colour. They now have water at their own levels (see "Water").
+- **The generator gives a channel no depth and no distance to its middle** (found in milestone 8), only its surface and its kind. So a stream or river is drawn at one fixed depth from bank to bank, and its banks step at the size of a tile. A distance to the channel's centre line in `Ground` would allow a bed that shelves and a smoother bank. It would not change any tile or rule.
+- **Rivers drop steeply in places:** 72 spans within about 2,600 tiles of the `vista` spawn fall more than half a tile in a tile and a half, some by 3 tiles, including where a river meets the sea below a cliff. They are drawn as a slope of white water one tile long, not as a sheer fall.
+- **One shared unit test ran close to its time limit.** `worldgen > gives the same answer whatever was asked before` takes 4.2 to 4.7 s on the development machine, against the default limit of 5 s. With one more test file running beside it (the chunk builder's, which computes a region) it failed about every other run, at 5.1 to 5.3 s. The limit for all tests is now 15 s (`vitest.config.ts`); the test itself is untouched. **For Sid to confirm or reverse.**
+- **The renderer drew chunks nobody could see** (found building the worker). A chunk the view had moved off stayed in the scene until it was two chunks away, drawn as blank parchment over the paper. It is hidden now. This is the only difference between pictures from before and after the worker.
+- **Two traps in measuring this renderer,** both met while measuring the worker:
+  - A timing loop that makes a new `MessageChannel` for every pause makes thousands a second, and the browser's clean-up of them shows up as stalls of 60 to 400 ms inside whatever code is running. The harness reuses one.
+  - Two captures of the same view do not match pixel for pixel unless the gust phase and the cloud drift are set first: both are added up frame by frame, so they carry the history of earlier frames. `same-picture.js` sets them.
 
 ### Flicker: how motion is measured
 Nobody had watched the wind move before Sid did, and he found tree crowns flashing. Motion is now measured, not judged from stills.
@@ -427,7 +497,76 @@ Nobody had watched the wind move before Sid did, and he found tree crowns flashi
 - **Ruled out:** normals are not rebuilt from moved positions (they are fixed per facet), and the wind's sheen is on grass only and is slow (it moved a typical grass pixel 1.8%, about once every four seconds).
 - **What still changes:** with light and movement together, three pixels in ten still swing more than 20%. Those are pixels on the edge of a crown or between two of its facets, which a moving tree passes back and forth across. That is the movement itself, at the sway's own rate.
 - **Reeds thrashed.** Their quiver grew with their height, so a reed flicked four times as far as grass. Rate of change for a reed pixel went from 0.81 to 0.44 times a second, and its largest frame-to-frame change from 15% to 10%.
+- **Water after milestone 8's changes** (wind 0.6): the sea 2.5% for a typical pixel at 0.13 times a second; a lake 5.1% at 0.19; a river 6.9% at 0.56, which is its current. The river's streaks first ran twice as fast (9.7% at 0.94) and were slowed.
 - **Grass and water were sound.** Grass changes with its own movement (typical pixel 13%, 0.44 times a second after the change). Lake and sea water change slowly: 6 to 11% for a typical pixel, about once every five seconds.
+
+### Moon phases and flowers in season (milestone 8 step 4, 2026-11-12)
+- **The moon, seen:** the river at night (`256,-256`, `#time=night`) under a full, a half and a new moon. The mean green of the open slope in the captures was 77, 72 and 66 of 255: a new-moon night is about a seventh darker on screen (28% less light). Moon shadows fade, and the stars in the river stand out more. It stays easy to read.
+- **The flowers, seen:** the meadow at `216,-1400` in the four seasons. Spring shows mostly buttercups with some daisies; summer shows daisies and harebells with fewer buttercups; autumn shows harebells and little else; winter shows none.
+- **Cost:** no draw calls, triangles or textures were added; one uniform of seven numbers was. Ground cover's baked shade went from three bytes a vertex to four (it was padded to four on the GPU already). A flower out of season is skipped at its first vertex test; one in season costs one table lookup.
+- **Not checked:** neither was put through the flicker harness. The moon changes by under 13% of its range in a night, and a flower takes hours of play to open.
+
+### Crowns over other explorers (milestone 8 step 3, 2026-11-12)
+- **Seen:** in conifer forest (`144,48`) with four stand-in explorers around the player, one that showed only the tip of its head before is in plain view after. The fourth-nearest gets no opening, as designed.
+- **Cost:** frames drawn back to back in that forest, with three others near and with none (median of five rounds of 60 frames): 4.3 against 4.1 ms fully zoomed out (134k triangles), 4.7 against 4.4 ms at zoom 14, 3.7 against 3.9 ms at zoom 26. That is 0.3 ms at most and inside the noise. With nobody near, the shader skips the work. No draw calls, triangles or uniforms were added.
+- **Not checked:** the opening moving with a walking explorer was not put through the flicker harness. It is the same dither as over your own explorer, which was.
+
+### Chunk meshes off the main thread (milestone 8, 2026-11-12)
+**How it was measured.** `stream-harness.js` (in the session's shared notes folder) stops the game's own loop, moves the player itself, calls `view.frame()` every 16.7 ms and times each call, for 600 frames a run on a fresh page. Between frames it yields to the event loop without timers, so it works in a background pane. "Main thread" is the same build with `#chunks=main`. Its figures match two runs of the commit before the worker (95th percentile 6.9 and 7.6 ms, 99th 17.4 and 15.5 ms, 23 and 27 frames over 8 ms), so the switch is a fair stand-in for "before". Desktop only (GTX 1050, 862×1234 window); each cell is the range over two or three runs.
+
+Main-thread time per frame while chunks stream in:
+
+| Run (600 frames) | | 95th percentile | 99th percentile | Frames over 8 ms | Frames over 16.7 ms | Slowest frame |
+|---|---|---|---|---|---|---|
+| Open land at 24 tiles a second, fully zoomed out (30 chunks) | Main thread | 7.0–8.2 ms | 16.7–20.3 ms | 26–30 | 6–10 | 24–31 ms |
+| | Worker | 1.6–2.6 ms | 2.1–3.8 ms | 0–1 | 0 | 6–11 ms |
+| Conifer forest at 24 tiles a second, fully zoomed out (35 chunks) | Main thread | 7.3–7.9 ms | 15.3–15.6 ms | 22–28 | 3–4 | 17–26 ms |
+| | Worker | 2.1–2.6 ms | 3.1–3.3 ms | 0–1 | 0–1 | 6–19 ms |
+| Walking pace (6 tiles a second) at the default zoom (6 chunks) | Main thread | 1.4–2.0 ms | 1.9–7.9 ms | 4–5 | 0 | 13–16 ms |
+| | Worker | 1.3–2.1 ms | 1.7–4.1 ms | 1 | 0–1 | 8–23 ms |
+| A jump to fresh land (16 chunks at once) | Main thread | 1.7–2.7 ms | 11.5–15.3 ms | 7–13 | 0–2 | 14–26 ms |
+| | Worker | 1.7–2.4 ms | 2.2–3.5 ms | 1 | 0–1 | 9–19 ms |
+
+- **The worker's one slow frame per run is not a chunk.** Timed piece by piece, it fell in frames where no chunk arrived and no heights were generated: a pause by the browser, most likely garbage collection. The main thread's slow frames are chunk builds.
+- **No chunk was ever missing from view while travelling** with the worker, at either speed: they are asked for 8 tiles ahead. After a jump, all 16 were drawn within 5 to 7 frames, against 11 on the main thread.
+- **A build takes 4 to 11 ms in the worker** once the land around it is generated, and about 100 to 130 ms for the very first, which generates everything around it. None of that is main-thread time now.
+- **Edits:** painting a tile showed in the mesh 2 frames later (33 ms) in 16 of 16 tries, standing still and while running with chunks streaming in. The slowest frame during any of them was 2.5 ms. Before, an edit was rebuilt in the same frame, at the cost of one build in that frame.
+- **The picture is the same.** The commit before the worker and this one were run side by side and captured at eleven fixed views (river, cliffs, lake, conifer forest at two zooms, coast, white water, desert, tundra, marsh) with the clocks frozen. The land matched to within 2 levels in 255 at every pixel (two captures of one build differ by 1 in a few dozen pixels). The only other differences were the explorer's own colour (each page has its own) and, in two views, bare parchment where the old build drew a leftover chunk (see "Findings for Sid").
+- **The built client works too:** `vite build` bundles the worker (40 KB), and the preview of it drew 16 chunks from the worker with no errors.
+- **Not measured: a phone.** The gain should be larger there, since a build costs several times more and a frame has the same 16.7 ms. `#chunks=main` is there so the two can be compared on a device.
+
+### Zoomed-out savings (milestone 8 step 2, 2026-11-12)
+Fully zoomed out (zoom 8) in an 862×1234 window, before and after ground cover is dropped there:
+
+| Spot | Triangles before | After | Draw calls before | After | Frame before | After |
+|---|---|---|---|---|---|---|
+| Terrace cliffs in grassland (`-1524,-1020`) | 76k | 36k | 51 | 44 | 2.5 ms | 1.9 ms |
+| River in a valley (`256,-256`) | 91k | 54k | 72 | 56 | 3.2–3.4 ms | 2.1 ms |
+| Lake and marsh (`352,144`) | 101k | 81k | 59 | 49 | 2.7 ms | 2.3 ms |
+| Sandy sea coast (`1968,1200`) | 48k | 37k | 38 | 28 | 2.0 ms | 1.7 ms |
+| Stream through conifer forest (`128,128`) | 172k | 149k | 93 | 80 | 3.7 ms | 2.8 ms |
+| Deep conifer forest (`144,48`) | 154k | 133k | 75 | 67 | 3.1–4.1 ms | 3.0 ms |
+
+- The "before" figures are the ones measured in milestones 7 and 8 on the same machine, not a same-run comparison.
+- **Sway:** in conifer forest at wind 0.6, the share of pixels that change over one second is 0.01% at zoom 8 and 10 (still), 3% at 12.5, 7% at 15 and 12% at 28.
+- **Pixel ratio:** the governor is unit-tested with made-up frame times. This desktop's screen has a ratio of 1, so it had nothing to lower here and was never seen to act on a real slow frame. Holding a ratio by hand (`setPixelRatio(1.25)`) resized the canvas as expected.
+
+### Water at its own levels (milestone 8, 2026-11-12)
+Fully zoomed out in an 862×1234 window, on the M4c step 2 terrain:
+
+| Spot | Draw calls | Triangles | Frame |
+|---|---|---|---|
+| River in a valley (`256,-256`) | 72 | 91k | 3.2–3.4 ms |
+| Stream through conifer forest (`128,128`) | 93 | 172k | 3.7 ms |
+| Mountain lake below a snow slope (`960,-192`) | 67 | 75k | 3.0 ms |
+| River dropping into a lake (`960,-802`) | 86 | 119k | 3.2 ms |
+| Lake and marsh (`352,144`) | 59 | 101k | 2.7 ms |
+| Sandy sea coast (`1968,1200`) | 38 | 48k | 2.0 ms |
+| Budget | 150 | 300k | 12 ms on the phone |
+
+- Water adds one draw call for each chunk that has any, as before; inland chunks with a river or lake now have one where they had none.
+- The water shader reads the grain texture twice per vertex for the swell and, on rivers only, once per pixel for the current.
+- **Chunk build, warm:** 4.8 ms mean (6.8 ms worst) over 14 chunks at the river.
 
 ### Snow drifts, the year and the heat (2026-11-12)
 Three changes Sid asked for, checked after they were made:
@@ -503,6 +642,12 @@ World `vista`, on the M4c terrain. Add `&time=afternoon&season=summer&weather=cl
 | `#w=vista&at=336,1776` | Tundra with frost patches |
 | `#w=vista&at=-1524,-1020` | Terrace cliffs stepping through grassland |
 | `#w=vista&at=1968,1200` | A sandy sea coast |
+| `#w=vista&at=256,-256` | A river in its valley |
+| `#w=vista&at=128,128` | A stream through conifer forest, by the spawn |
+| `#w=vista&at=960,-192` | A mountain lake below a snow slope |
+| `#w=vista&at=960,-802` | A river dropping into a lake between cliffs: white water |
+| `#w=vista&at=218,332` | A river reaching the sea across a beach |
+| `#w=vista&at=550,-92` | A river running into a lake |
 
 The spots used in milestones 1 to 6 (`-444,-516`, `744,612`, `816,48`) show different land now. Zoom out fully to see the diorama on its map.
 
@@ -527,5 +672,18 @@ Sid answered every item that was waiting, through the coordinating session. The 
 **Overtaken**
 - Item 4 (late-afternoon default light) by the day/night cycle, and item 9 (reeds on sea shores) by milestone 7.
 
+**Decided later**
+- **The sheer cliffs' rim** (item 33): "Keep it ragged". Walkable ground beside a cliff stays at its true heights, as built. No change.
+
 ### Waiting for Sid
-33. **Sheer cliffs as built:** one vertical face along the drop, grass to the edge, the beach to the foot, and open ground left at its true heights (so the rim is slightly ragged). The alternative is to level the ground beside a cliff as well, which is cleaner but draws walkable tiles flatter than they are.
+34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
+35. **A visible current on rivers and streams,** as slow streaks carried downstream.
+36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
+37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
+38. **Ground cover fades out between zoom 13 and 9.5,** and wind sway between 15 and 10 (milestone 8 step 2).
+39. **The pixel ratio never goes below 1,** so a screen whose own ratio is 1 is never made blurrier (milestone 8 step 2).
+40. **An edit shows two frames later, not in the same frame,** and the old mesh stays until then. In return no frame is ever spent building.
+41. **The limit for every unit test is 15 s, up from 5 s** (`vitest.config.ts`): see "Findings for Sid". Not an art decision, but outside this work's usual files.
+42. **Crowns thin over the three nearest other explorers,** a little less than over you (milestone 8 step 3). Beyond three, an explorer in a wood shows only as a name label.
+43. **The moon has phases:** new to full and back over eight days, and a new-moon night is 28% darker than a full-moon one, with fainter moon shadows and brighter stars (milestone 8 step 4). The moon's hours do not change.
+44. **Each flower keeps to its season:** buttercups and marsh marigolds in spring, thrift, oxeye daisies and cotton-grass in summer, harebells into autumn, none in winter (milestone 8 step 4).

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { DAY_SECONDS, SUNRISE, SUNSET, TIMES, hourAt, keyBody, lightAt, luminance, parseTime } from './day.ts';
+import {
+  DAY_SECONDS, MOONS, MOON_DAYS, SUNRISE, SUNSET, TIMES, hourAt, keyBody, lightAt, luminance, makeLight, moonAt, moonOn, parseMoon, parseTime,
+} from './day.ts';
 
 describe('the clock', () => {
   it('runs through all 24 hours once a day, always forwards', () => {
@@ -67,5 +69,72 @@ describe('the light', () => {
     }
     expect(lightAt(TIMES.noon).lamp).toBe(0);
     expect(lightAt(TIMES.night).lamp).toBe(1);
+  });
+});
+
+describe('the moon', () => {
+  const month = MOON_DAYS * DAY_SECONDS * 1000;
+
+  it('goes from new to full and back once a month, smoothly', () => {
+    expect(moonAt(0)).toBeCloseTo(0, 6);
+    expect(moonAt(month / 2)).toBeCloseTo(1, 6);
+    expect(moonAt(month / 4)).toBeCloseTo(0.5, 6);
+    expect(moonAt(month * 3 + month / 4)).toBeCloseTo(moonAt(month / 4), 6);
+    expect(moonAt(-month / 4)).toBeCloseTo(0.5, 6);
+    // No night sees it change by more than a little: a night is under a third of a day.
+    const night = 0.3 * DAY_SECONDS * 1000;
+    for (let t = 0; t < month; t += month / 200) {
+      const lit = moonAt(t);
+      expect(lit).toBeGreaterThanOrEqual(0);
+      expect(lit).toBeLessThanOrEqual(1);
+      expect(Math.abs(moonAt(t + night) - lit)).toBeLessThan(0.13);
+    }
+  });
+
+  it('reads a phase by name or as how much is lit', () => {
+    expect(parseMoon('new')).toBe(0);
+    expect(parseMoon('full')).toBe(1);
+    expect(parseMoon('half')).toBe(MOONS.half);
+    expect(parseMoon('0.3')).toBe(0.3);
+    expect(parseMoon('7')).toBe(1);
+    expect(parseMoon('')).toBeNull();
+    expect(parseMoon(null)).toBeNull();
+    expect(parseMoon('cheese')).toBeNull();
+  });
+
+  it('leaves a full-moon night, and every day, exactly as they were', () => {
+    for (let h = 0; h < 24; h += 0.25) {
+      expect(moonOn(lightAt(h), h, 1)).toEqual(lightAt(h));
+      if (h >= SUNRISE && h < SUNSET) expect(moonOn(lightAt(h), h, 0)).toEqual(lightAt(h));
+    }
+  });
+
+  it('makes a night darker the less moon there is, but never dark', () => {
+    const full = lightAt(TIMES.night), half = moonOn(lightAt(TIMES.night), TIMES.night, 0.5), none = moonOn(lightAt(TIMES.night), TIMES.night, 0);
+    expect(half.level).toBeLessThan(full.level);
+    expect(none.level).toBeLessThan(half.level);
+    // Open ground under a new moon is still most of what it is under a full one.
+    expect(none.level).toBeGreaterThan(0.17);
+    expect(none.level / full.level).toBeGreaterThan(0.7);
+    // The moon's own light and its glint go; the sky's fill does not.
+    expect(luminance(none.key)).toBeLessThan(luminance(full.key) * 0.3);
+    expect(luminance(none.key)).toBeGreaterThan(0);
+    expect(none.glint).toBeLessThan(full.glint * 0.2);
+    expect(none.sky).toEqual(full.sky);
+  });
+
+  it('comes on with the night: sundown and first light are the same under any moon', () => {
+    for (const h of [18.01, 5.99]) {
+      expect(moonOn(lightAt(h), h, 0).level).toBeCloseTo(lightAt(h).level, 2);
+    }
+    // Through dusk the level only ever falls, whatever the moon.
+    for (const lit of [0, 0.5, 1]) {
+      let prev = Infinity;
+      for (let h = 18.01; h < 21; h += 0.05) {
+        const level = moonOn(lightAt(h, makeLight()), h, lit).level;
+        expect(level).toBeLessThanOrEqual(prev + 1e-9);
+        prev = level;
+      }
+    }
   });
 });

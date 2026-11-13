@@ -8,6 +8,7 @@
  * Every explorer sees the same hour, because it is read from the wall clock and
  * not sent over the network. The sun is up from 6 to 18; the moon is up the rest
  * of the time and travels the same arc, so the terrain's baked shadows serve both.
+ * The moon waxes and wanes over a month of eight days, and the night is as bright as it is full.
  */
 
 /** One whole day and night, in real seconds. */
@@ -57,6 +58,27 @@ export function keyBody(hour: number): { moon: boolean; theta: number } {
   const moon = hour < SUNRISE || hour >= SUNSET;
   const since = moon ? (hour - SUNSET + 24) % 24 : hour - SUNRISE;
   return { moon, theta: (since / 12) * Math.PI };
+}
+
+/** A month: the moon goes from new to full and back in this many days, so each night has a phase of its own. */
+export const MOON_DAYS = 8;
+
+/** How much of the moon is lit, from 0 (new) to 1 (full), at a wall-clock time. */
+export function moonAt(epochMs: number): number {
+  const period = MOON_DAYS * DAY_SECONDS * 1000;
+  const phase = (((epochMs % period) + period) % period) / period;
+  return (1 - Math.cos(phase * Math.PI * 2)) / 2;
+}
+
+/** The moon's phases by name, for `#moon=` and for comparable screenshots: how much of it is lit. */
+export const MOONS = { new: 0, crescent: 0.15, half: 0.5, gibbous: 0.85, full: 1 } as const;
+
+/** `#moon=`: a name from MOONS or how much is lit, 0 to 1. Null follows the clock. */
+export function parseMoon(s: string | null | undefined): number | null {
+  if (!s) return null;
+  if (s in MOONS) return MOONS[s as keyof typeof MOONS];
+  const lit = Number(s);
+  return Number.isFinite(lit) ? Math.min(1, Math.max(0, lit)) : null;
 }
 
 export interface Light {
@@ -140,6 +162,30 @@ export function lightAt(hour: number, out: Light = makeLight()): Light {
   out.soft = mix(a.soft, b.soft);
   out.glint = mix(a.glint, b.glint);
   return out;
+}
+
+/** Under a new moon the moon's own light falls to this share of a full moon's: starlight still gives the land its form. */
+const NEW_MOON_KEY = 0.25;
+/** The dead of night is this much darker under a new moon than under a full one. Night is never dark. */
+const NEW_MOON_DIM = 0.28;
+const DUSK_LEVEL = 0.46, NIGHT_LEVEL = 0.25;
+
+/**
+ * Bend a night's light to the moon's phase. `lit` is how much of the moon is lit (see moonAt). A full
+ * moon changes nothing: the table above is a full-moon night. Under less moon the key light weakens and
+ * its glint on water goes; the night darkens only as far as it is moonlight that lights it, so sundown
+ * and first light are untouched and the dark comes on with the night.
+ */
+export function moonOn(light: Light, hour: number, lit: number): Light {
+  const h = ((hour % 24) + 24) % 24;
+  if (h >= SUNRISE && h < SUNSET) return light;
+  const dark = 1 - Math.min(1, Math.max(0, lit));
+  const k = 1 - (1 - NEW_MOON_KEY) * dark;
+  for (let c = 0; c < 3; c++) light.key[c] *= k;
+  const night = Math.min(1, Math.max(0, (DUSK_LEVEL - light.level) / (DUSK_LEVEL - NIGHT_LEVEL)));
+  light.level *= 1 - NEW_MOON_DIM * dark * night;
+  light.glint *= 1 - 0.9 * dark;
+  return light;
 }
 
 export const luminance = (c: ArrayLike<number>) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { BLOOM, BLOOM_KINDS } from './cover.ts';
 import {
-  SEASON_NAMES, SEASON_SECONDS, WEATHERS, flashAt, parseSeason, parseWeather, seasonAt, weatherAt, yearAt,
+  SEASON_NAMES, SEASON_SECONDS, WEATHERS, bloomsAt, flashAt, parseSeason, parseWeather, seasonAt, weatherAt, yearAt,
 } from './weather.ts';
 
 const HOUR = 3_600_000;
@@ -104,5 +105,55 @@ describe('the weather', () => {
     expect(peak).toBeGreaterThan(0.8);
     expect(lit / n).toBeLessThan(0.03);
     expect(lit).toBeGreaterThan(0);
+  });
+});
+
+describe('the flowers', () => {
+  const at = (year: number) => bloomsAt(seasonAt(year));
+
+  it('has an amount for every kind, and leaves everything that is not a flower alone', () => {
+    for (let y = 0; y < 4; y += 0.05) {
+      const out = at(y);
+      expect(out.length).toBe(BLOOM_KINDS);
+      expect(out[0]).toBe(1);
+      for (const v of out) {
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
+    expect(Object.values(BLOOM).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('gives every flower a season when all of them are out, and none in winter', () => {
+    const winter = at(3.3);
+    for (const kind of Object.values(BLOOM)) {
+      expect(Math.max(at(0.3)[kind], at(1.3)[kind], at(2.3)[kind])).toBe(1);
+      expect(winter[kind]).toBe(0);
+    }
+  });
+
+  it('keeps each to its own part of the year', () => {
+    const spring = at(0.3), summer = at(1.3), autumn = at(2.3);
+    // Buttercups and marsh marigolds are spring flowers.
+    expect(spring[BLOOM.buttercup]).toBeGreaterThan(summer[BLOOM.buttercup]);
+    expect(spring[BLOOM.marigold]).toBeGreaterThan(summer[BLOOM.marigold]);
+    expect(autumn[BLOOM.buttercup]).toBe(0);
+    // Thrift, oxeye daisies and cotton-grass are at their best in summer.
+    for (const kind of [BLOOM.thrift, BLOOM.oxeye, BLOOM.cotton]) {
+      expect(summer[kind]).toBeGreaterThan(spring[kind]);
+      expect(summer[kind]).toBeGreaterThan(autumn[kind]);
+    }
+    // Harebells come late: none in spring, most in autumn.
+    expect(spring[BLOOM.harebell]).toBe(0);
+    expect(autumn[BLOOM.harebell]).toBeGreaterThan(summer[BLOOM.harebell]);
+  });
+
+  it('changes smoothly through the year', () => {
+    let prev = at(0);
+    for (let y = 0.01; y <= 4; y += 0.01) {
+      const now = at(y);
+      for (let k = 0; k < BLOOM_KINDS; k++) expect(Math.abs(now[k] - prev[k])).toBeLessThan(0.08);
+      prev = now;
+    }
   });
 });

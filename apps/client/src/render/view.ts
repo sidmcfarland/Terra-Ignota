@@ -15,9 +15,10 @@ import {
 import type { PlayerInfo, TileCache } from '@terra/shared';
 import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
 import type { Air } from './air.ts';
+import { PixelRatioGovernor } from './governor.ts';
 import { Motes } from './motes.ts';
 import { Precipitation } from './precip.ts';
-import { Terrain, WATER_Y } from './terrain.ts';
+import { Terrain, type RegionSource } from './terrain.ts';
 import { WEATHERS, type Season, type Weather } from './weather.ts';
 import { ZoneLines } from './zones.ts';
 
@@ -51,6 +52,10 @@ export interface PerfStats {
   /** Chunk meshes built so far, and the slowest build (ms). */
   chunkBuilds: number;
   chunkBuildMax: number;
+  /** Whether chunks are built on a worker (if not, the builds are on the main thread). */
+  chunkWorker: boolean;
+  /** Chunks in view that are not drawn yet. */
+  chunksMissing: number;
   pixelRatio: number;
 }
 
@@ -65,6 +70,12 @@ interface Avatar {
   hue: number;
   name: string;
 }
+
+/** 0 below `a`, 1 above `b`, and a smooth rise between. */
+const ramp = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
 
 /** Half-width of an explorer's shadow, in tiles, and the piece's height. */
 const SHADOW_R = 0.27, PAWN_H = 0.9;
@@ -127,7 +138,7 @@ export class GameView {
   private zoneLines: ZoneLines;
   private precip = new Precipitation();
   private motes = new Motes();
-  private heightAt = (x: number, y: number) => this.terrain.heightAt(x, y);
+  private surfaceAt = (x: number, y: number) => this.terrain.surfaceAt(x, y);
   private avatars = new Map<string, Avatar>();
   private labels = document.createElement('div');
   private yaw = Math.PI / 4;
@@ -142,15 +153,22 @@ export class GameView {
   private frameTimes = new Float32Array(PERF_FRAMES);
   private cpuTimes = new Float32Array(PERF_FRAMES);
   private perfI = 0;
+  /** Draws the canvas coarser when frames run late, and finer again when they have not for a while. */
+  private governor = new PixelRatioGovernor(devicePixelRatio);
+  private fixedRatio: number | null = null;
   private lampDist = new Float64Array(LAMPS);
 
-  constructor(tiles: TileCache) {
+  /**
+   * `regions` is where drainage regions are computed ahead of need, if anywhere: the terrain shares them
+   * with its worker. `chunkWorker: false` builds chunk meshes on the main thread instead.
+   */
+  constructor(tiles: TileCache, regions: RegionSource | null = null, chunkWorker = true) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.governor.ratio);
     this.renderer.setClearColor(PALETTE.parchment);
     this.canvas = this.renderer.domElement;
 
-    this.terrain = new Terrain(tiles);
+    this.terrain = new Terrain(tiles, regions, chunkWorker);
     this.scene.add(this.terrain.group);
     this.zoneLines = new ZoneLines(tiles.seed);
     this.scene.add(this.zoneLines.group);
@@ -191,6 +209,22 @@ export class GameView {
   /** The wind being shown: the direction it blows toward and its strength, 0–1. */
   get wind(): { x: number; y: number; strength: number } {
     return this.look.wind;
+  }
+
+  /** How much of the moon is lit, 0 (new) to 1 (full). */
+  get moon(): number {
+    return this.look.moon;
+  }
+
+  /** Hold the moon's phase (how much of it is lit, 0 to 1), or pass null to follow the shared clock again. */
+  setMoon(lit: number | null) {
+    this.look.fixedMoon = lit;
+  }
+
+  /** Hold the canvas at a pixel ratio (0.5 to 3), or pass null to let it follow the measured frame time again. */
+  setPixelRatio(ratio: number | null) {
+    this.fixedRatio = ratio === null ? null : Math.min(3, Math.max(0.5, ratio));
+    this.renderer.setPixelRatio(this.fixedRatio ?? this.governor.ratio);
   }
 
   /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
@@ -240,7 +274,8 @@ export class GameView {
       this.renderer.setSize(w, h);
     }
 
-    const groundY = Math.max(this.terrain.heightAt(self.x, self.y), WATER_Y - 0.25);
+    // An explorer in water wades: a quarter of a tile under the surface, whatever level that water stands at.
+    const groundY = Math.max(this.terrain.heightAt(self.x, self.y), this.terrain.waterAt(self.x, self.y) - 0.25);
     const target = new Vector3(self.x, groundY, self.y);
     const cp = Math.cos(PITCH);
     this.camera.position.set(
@@ -256,18 +291,22 @@ export class GameView {
     this.camera.updateProjectionMatrix();
     this.viewDir.set(cp * Math.sin(this.yaw), Math.sin(PITCH), cp * Math.cos(this.yaw));
     this.look.update(self, this.viewDir, now / 1000);
+    // Small things fade as the view zooms out (zoom is CSS pixels to a tile): ground cover sinks away
+    // between 13 and 9.5, where a blade is under three pixels tall, and sway stills between 15 and 10.
+    const cover = ramp(9.5, 13, zoom);
+    U.uDetail.value.set(cover, ramp(10, 15, zoom));
 
     // Ground seen at this pitch stretches ~1/sin(pitch) vertically.
     const radius = Math.hypot(w, h / Math.sin(PITCH)) / zoom / 2;
     // Beyond the known world there is only parchment, so there is nothing to build or draw.
-    this.terrain.update(self.x, self.y, Math.min(radius, REVEAL_RADIUS + 4));
+    this.terrain.update(self.x, self.y, Math.min(radius, REVEAL_RADIUS + 4), cover);
     // The paper is far below the land, so it has to reach further up the screen to fill the view.
     const reach = (radius + Math.abs(PAPER_Y) / Math.tan(PITCH)) * 2.2;
     this.paper.position.set(target.x, PAPER_Y, target.z);
     this.paper.scale.set(reach, 1, reach);
     this.zoneLines.update(self.x, self.y, radius);
     this.precip.update(this.look.weather, this.look.wind, groundY, radius, dt);
-    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.heightAt, WATER_Y);
+    this.motes.update(this.look.air, this.look.wind, self, radius, dt, this.surfaceAt, -Infinity);
 
     const seen = new Set<string>();
     const v = new Vector3();
@@ -276,7 +315,7 @@ export class GameView {
     for (const l of lamps) l.w = 0;
     for (const p of players) {
       const a = this.avatar(p);
-      const gy = Math.max(this.terrain.heightAt(p.x, p.y), WATER_Y - 0.25);
+      const gy = Math.max(this.terrain.heightAt(p.x, p.y), this.terrain.waterAt(p.x, p.y) - 0.25);
       a.mesh.position.set(p.x, gy, p.y);
       let slot = 0;
       if (!p.self) {
@@ -303,6 +342,9 @@ export class GameView {
 
     const i = this.perfI++ % PERF_FRAMES;
     this.frameTimes[i] = now - this.lastFrame;
+    // A hidden tab's frames come seldom and late; they say nothing about how fast the device draws.
+    const ratio = document.hidden ? null : this.governor.sample(now - this.lastFrame);
+    if (ratio !== null && this.fixedRatio === null) this.renderer.setPixelRatio(ratio);
     this.cpuTimes[i] = performance.now() - now;
     this.lastFrame = now;
   }
@@ -328,6 +370,8 @@ export class GameView {
       textures: info.memory.textures,
       chunkBuilds: this.terrain.buildMs.count,
       chunkBuildMax: this.terrain.buildMs.max,
+      chunkWorker: this.terrain.offThread,
+      chunksMissing: this.terrain.missing,
       pixelRatio: this.renderer.getPixelRatio(),
     };
   }
@@ -385,8 +429,8 @@ export class GameView {
     const lit = this.look.key * Math.min(1, Math.max(0, (bake.x - horizon + bake.z) / (2 * bake.z)));
     a.strength.x = 0.2 + 0.3 * lit;
 
-    const h = t.heightAt(x, y), e = 0.3;
-    const wet = h < WATER_Y;
+    const h = t.heightAt(x, y), e = 0.3, water = t.waterAt(x, y);
+    const wet = h < water;
     // The slope under it (flat on water), as a unit normal.
     const n = this.tmpN.set(
       wet ? 0 : (t.heightAt(x - e, y) - t.heightAt(x + e, y)) / (2 * e),
@@ -400,7 +444,7 @@ export class GameView {
     const reach = lit * Math.min(2.2, (0.8 * PAWN_H * Math.hypot(sun.x, sun.z)) / Math.max(0.2, sun.y));
     const half = SHADOW_R + reach / 2;
     // The near end of the shadow stays under the piece; the far end reaches away from the sun.
-    const cx = x + along.x * (reach / 2), cy = Math.max(h, WATER_Y) + along.y * (reach / 2), cz = y + along.z * (reach / 2);
+    const cx = x + along.x * (reach / 2), cy = Math.max(h, water) + along.y * (reach / 2), cz = y + along.z * (reach / 2);
     a.shadow.matrix
       .makeBasis(along.multiplyScalar(half), n, across.multiplyScalar(SHADOW_R))
       .setPosition(cx + n.x * 0.03, cy + n.y * 0.03, cz + n.z * 0.03);
