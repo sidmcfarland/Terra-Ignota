@@ -66,13 +66,13 @@ interface Chunk {
 
 const keyOf = (cx: number, cy: number) => `${cx},${cy}`;
 
-/** A mesh's geometry from its data. `shadeSize` is 4 for the ground (it carries a dry flag) and 3 for cover. */
-function geometry(d: MeshData, shadeSize: number): BufferGeometry {
+/** A mesh's geometry from its data: the ground's, or the ground cover's. */
+function geometry(d: MeshData): BufferGeometry {
   const g = new BufferGeometry();
   g.setAttribute('position', new BufferAttribute(d.position, 3));
   g.setAttribute('normal', new BufferAttribute(d.normal, 3, true));
   g.setAttribute('aColor', new BufferAttribute(d.color, 4, true));
-  g.setAttribute('aShade', new BufferAttribute(d.shade, shadeSize, true));
+  g.setAttribute('aShade', new BufferAttribute(d.shade, 4, true));
   g.boundingSphere = sphere(d.sphere);
   return g;
 }
@@ -213,7 +213,7 @@ export class Terrain {
 
     const group = new Group();
     group.position.set(d.cx * CHUNK, 0, d.cy * CHUNK);
-    const ground = geometry(d.ground, 4);
+    const ground = geometry(d.ground);
     group.add(new Mesh(ground, groundMat));
 
     let water: BufferGeometry | null = null;
@@ -230,7 +230,7 @@ export class Terrain {
       group.add(new Mesh(water, waterMat));
     }
 
-    const cover = d.cover ? geometry(d.cover, 3) : null, coverMesh = cover ? new Mesh(cover, coverMat) : null;
+    const cover = d.cover ? geometry(d.cover) : null, coverMesh = cover ? new Mesh(cover, coverMat) : null;
     if (coverMesh) {
       coverMesh.visible = this.showCover;
       group.add(coverMesh);

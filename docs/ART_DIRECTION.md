@@ -139,9 +139,16 @@ The colours of the light change through the day. They are in "Time of day" below
 | Moonlit night | 21.5 | Moon `#A9C4F0` | Deep blue `#6E86B8` | 0.25 | Blue-green and quiet, with moon shadows. Never dark |
 
 - **The sun is up from 6 to 18.** It rises east-south-east, leans south at midday (52° at its highest) and sets west-north-west.
-- **The moon follows the same arc twelve hours behind,** so it rises as the sun sets. The terrain's baked shadows therefore serve both, and a moonlit night has long soft shadows of its own. The moon is always full; phases are for later.
+- **The moon follows the same arc twelve hours behind,** so it rises as the sun sets. The terrain's baked shadows therefore serve both, and a moonlit night has long soft shadows of its own.
+- **The moon has phases** (milestone 8). It goes from new to full and back over eight days (6.4 hours of play), read from the wall clock like the hour, so every explorer has the same moon. The night in the table is a full moon's. With less moon:
+  - the moon's own light weakens, to a quarter under a new moon, so moon shadows fade but starlight still gives the land its form;
+  - open ground darkens, by 28% under a new moon (0.18 against 0.25);
+  - the moon's glint leaves the water and the stars lying in it show half as bright again;
+  - lanterns are unchanged, so they matter more.
+  - Sundown and first light are the same under any moon: the dark comes on with the night.
+  - `#moon=new|crescent|half|gibbous|full` (or how much is lit, 0 to 1) holds a phase; `window.__ti.view.setMoon(lit)` does the same and `null` hands it back to the clock.
 - **The key light changes hands below the horizon.** As either body meets the horizon its light fades to nothing, so dusk and first light are lit by the sky alone.
-- **Night is never dark.** Open ground at night is about a quarter as bright as in the afternoon (roughly half as bright to the eye). The picture is cooled and desaturated as the level falls, the way eyes see by moonlight.
+- **Night is never dark.** Open ground at night is about a quarter as bright as in the afternoon (roughly half as bright to the eye), and a little under a fifth under a new moon. The picture is cooled and desaturated as the level falls, the way eyes see by moonlight.
 - **The parchment takes the light too,** but only half its colour, so the map dims to slate at night and warms at sunset while staying paper.
 - **Every explorer carries a lantern.** From sunset to just after sunrise a warm pool of light (`#FFAE62`, reaching 7.5 tiles) surrounds each explorer and flickers slightly. It lights the ground, trees, water and the piece itself. Yours always shows; up to three more go to the nearest other explorers. At night, another explorer is a warm light in the distance: company, in keeping with "shared, not lonely".
 - **The day follows the wall clock, not the network.** One day lasts 48 real minutes and every explorer reads the same hour from their own clock. Nothing is sent. The hours are not spent evenly: the day lingers at dawn (about 5 minutes) and through the golden hour and sunset (about 8), and hurries through noon (about 5) and the night (about 10 of the 48).
@@ -208,6 +215,18 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Snow is a rule in the shader, not new geometry.** Each surface whitens by how far it faces the sky and by where the drifts lie, so cover comes and goes in patches as the amount changes. Nothing is rebuilt.
 - **Drifts come from real noise, and from the land.** Where snow lies is read from the paper's grain texture at two scales, which gives broad drifts with ragged edges and no pattern. Snow also goes first from slopes that face the midday sun. (The first version summed three sine waves. Cut off at a level, that leaves round bare patches in rows; Sid saw them as polka dots, and it was replaced on 2026-11-12.) **Rule for anything that covers or clears ground in patches: use the grain texture or other real noise, never a sum of a few sine waves.**
 - **The seasons recolour by rule too:** anything green shifts, and sand, rock and what players build do not.
+- **Flowers keep to their seasons** (milestone 8). Each kind is out in its own part of the year (the shares below are rough), and comes and goes flower by flower, each a little earlier or later than its neighbours, rising as it opens. Nothing flowers in winter.
+
+  | Flower | Where | Spring | Summer | Autumn |
+  |---|---|---|---|---|
+  | Buttercup (yellow) | Grass and meadow | All | Six in ten | None |
+  | Marsh marigold (yellow) | Marsh | All | Three in ten | None |
+  | Thrift (pink) | The shore | Seven in ten | All | A few |
+  | Oxeye daisy (white) | Grass and meadow | Half | All | A quarter |
+  | Cotton-grass (white) | Tundra and marsh | Three in ten | All | Four in ten |
+  | Harebell (lilac) | Meadow | None | Eight in ten | All |
+
+  So a meadow is yellow in spring, white and lilac in summer, and thinly lilac in autumn. The table is `bloomsAt` in `weather.ts`. A flower's vertices carry its kind, and the shader leaves out the ones not in season; where every flower stands is unchanged from before.
 - **Rain and snow are one mesh** of 480 small quads that fall through a box around the explorer and wrap. The vertex shader places every one. Nothing falls on the blank map: weather belongs to the land.
 - **`#weather=clear|broken|overcast|rain|storm|fog|snow`** and **`#season=spring|summer|autumn|winter`** (or a point in the year from 0 to 4) hold them still. `window.__ti.view.setWeather(name)` and `setSeason(year)` do the same; pass `null` to return to the clock. The debug panel shows both.
 
@@ -300,7 +319,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 - **The canvas's pixel ratio follows the measured frame time** (`governor.ts`, milestone 8). A phone's frame cost is mostly pixels, and a ratio of 2 is four times the pixels of 1. When more than two frames in five run late for three quarters of a second, the ratio drops by 15%, down to 1 at the least. When frames have been on time for about five seconds, and no drop happened in the last half minute, it rises again. A ratio that proves too much is tried again less and less often, so it settles. A hidden tab, a single long frame and the first second and a half are ignored. A screen whose own ratio is 1 is never changed. `#pr=1.5` holds a ratio; `window.__ti.view.setPixelRatio(r)` does the same and `null` hands it back. The debug panel shows the ratio in force.
 - `apps/client/src/render/weather.ts`: **the weather and the seasons** (milestone 5), as plain numbers with unit tests. `apps/client/src/render/precip.ts` is the rain and snow in the air: one mesh, one draw call. See "Weather and seasons".
 - `apps/client/src/render/wind.ts`: **the wind** (milestone 4). Direction and strength from the wall clock, as plain numbers with unit tests. The field itself (`windAt`) is in `look.ts`'s shared vertex code. See "Wind".
-- `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day".
+- `apps/client/src/render/day.ts`: **the day** (milestone 3). The clock (`hourAt`), the named arrangements (`TIMES`) and the table of lights, as plain numbers with unit tests. See "Time of day". The moon's phase (`moonAt`) and what it does to a night's light (`moonOn`) are here too (milestone 8).
 - **Lighting is per vertex and costs almost nothing per pixel.** Facets carry their face normal, so vertex lighting is flat shading. There are no Three.js lights, no shadow maps and no full-screen passes.
 - **Shadows and ambient occlusion are baked when a chunk is built.** Each vertex stores how high the land (and forest canopy) rises toward the morning sun and toward the evening sun. The shader compares that with the sun's elevation, so long soft shadows follow the time of day for one byte per vertex per direction. The morning horizon is used until midday and the evening one after it, for the sun and for the moon alike.
 - **The known world is a circle around the player** (44 tiles, `REVEAL_RADIUS`). Beyond it is blank parchment with a faint hand-ruled graticule every 64 tiles. In the 15-tile fringe the land is first a flat ink wash inside an inked outline, then rises as a pale paper relief, then takes its colour. This stands in for M5's explored area: M5 should replace `revealAt` in `look.ts` with a lookup of what has been explored.
@@ -376,6 +395,8 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | Chunk meshes are built in a worker, asked for 8 tiles ahead of the view, and shown in place of the old mesh when ready | Building a chunk was the last main-thread cost that scaled with the device: 4 to 30 ms here, several times that on a phone. Sid's steer for milestone 8. |
 | 2026-11-12 | The chunk worker and the region worker are one script started twice, and regions are handed from one to the other | One worker for both would stall chunks for a quarter of a second (more on a phone) whenever a region is computed; two that each computed regions would do that work twice. |
 | 2026-11-12 | Crowns thin over the three nearest other explorers, as they do over your own | "Shared, not lonely": another explorer should read as company, not vanish in a wood. It reuses the lantern positions the shaders already have, so it adds no uniforms and no draw calls. Sid's steer for milestone 8. |
+| 2026-11-12 | The moon has phases over an eight-day month, and they change only how bright the night is | A different night each time you play, for no cost. Keeping the moon's hours fixed keeps the approved rule that it rises as the sun sets, and the baked shadows with it. |
+| 2026-11-12 | Each flower keeps to its season, decided in the shader from a kind carried on its vertices | The seasons were recolouring the land while its flowers stayed out all year. A table of numbers and one byte per vertex, with nothing rebuilt as the year turns. |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
@@ -401,7 +422,7 @@ The order is by how much each step decides the look of everything after it. Each
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
 | 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
-| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1), (1b), (2), the chunk-mesh worker and (3) done.** Next (4) |
+| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **Done:** (1), (1b), (2), the chunk-mesh worker, (3), and for (4) moon phases and flowers in season. What is left is under "Kept for later" |
 
 ### Kept for later (found along the way)
 - **Tiles near the player are still generated on the main thread,** a chunk at a time, because movement reads them synchronously (`step()`): 1.2 ms a chunk here (3.6 ms at worst), about one chunk for every 32 tiles walked. The harness does not time this (it is in the game's own loop, not in `view.frame()`). The heights under a spot no built chunk covers yet are also worked out on the main thread; in the measured runs that never happened.
@@ -418,7 +439,6 @@ The order is by how much each step decides the look of everything after it. Each
 - **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), nor the three nearest other explorers (milestone 8). A fourth and any further still disappear under the canopy, though their name labels show.
 - **Water does not freeze** in winter, and rain makes no splash on the ground.
 - **A bare tree is a thinner, twig-coloured crown,** not branches. It reads at the game's scale; a real winter model would be better up close.
-- **Flowers bloom all year** except under snow. Tying each kind to its season needs a flag on the vertex.
 - **The season rule finds green by colour,** so the golden meadow does not turn. A per-vertex "this grows" flag would be exact.
 - **Rain is not stopped by tree crowns or hills:** a streak can be seen falling through a canopy.
 - **Lanterns do not come on in a dark storm by day.**
@@ -432,7 +452,7 @@ The order is by how much each step decides the look of everything after it. Each
 - **Fireflies and dust do not know what is under them** beyond its height: fireflies drift over open water and sand as readily as over grass.
 - **Motes are not lit by lanterns or shaded by hills.**
 - **Cloud shadows do not fall on the parchment** or on the rain.
-- **The moon is always full.** Phases would change how bright each night is.
+- **The moon's phase changes how bright the night is, not when the moon is up.** It still rises as the sun sets, whatever its phase, so the baked shadows go on serving it. There is no moon to see: the view never shows the sky.
 - **The playing piece has no lantern on it.** The light simply centres on the piece. A real character (M5) should carry one.
 - **Only four lanterns light the land at once** (yours and the three nearest). A crowd of explorers at night would need a cheaper way to show the rest, such as a glow sprite.
 - **Lantern light is not shadowed.** It passes through hills and trees. It reaches 7.5 tiles, so this is hard to see.
@@ -479,6 +499,12 @@ Nobody had watched the wind move before Sid did, and he found tree crowns flashi
 - **Reeds thrashed.** Their quiver grew with their height, so a reed flicked four times as far as grass. Rate of change for a reed pixel went from 0.81 to 0.44 times a second, and its largest frame-to-frame change from 15% to 10%.
 - **Water after milestone 8's changes** (wind 0.6): the sea 2.5% for a typical pixel at 0.13 times a second; a lake 5.1% at 0.19; a river 6.9% at 0.56, which is its current. The river's streaks first ran twice as fast (9.7% at 0.94) and were slowed.
 - **Grass and water were sound.** Grass changes with its own movement (typical pixel 13%, 0.44 times a second after the change). Lake and sea water change slowly: 6 to 11% for a typical pixel, about once every five seconds.
+
+### Moon phases and flowers in season (milestone 8 step 4, 2026-11-12)
+- **The moon, seen:** the river at night (`256,-256`, `#time=night`) under a full, a half and a new moon. The mean green of the open slope in the captures was 77, 72 and 66 of 255: a new-moon night is about a seventh darker on screen (28% less light). Moon shadows fade, and the stars in the river stand out more. It stays easy to read.
+- **The flowers, seen:** the meadow at `216,-1400` in the four seasons. Spring shows mostly buttercups with some daisies; summer shows daisies and harebells with fewer buttercups; autumn shows harebells and little else; winter shows none.
+- **Cost:** no draw calls, triangles or textures were added; one uniform of seven numbers was. Ground cover's baked shade went from three bytes a vertex to four (it was padded to four on the GPU already). A flower out of season is skipped at its first vertex test; one in season costs one table lookup.
+- **Not checked:** neither was put through the flicker harness. The moon changes by under 13% of its range in a night, and a flower takes hours of play to open.
 
 ### Crowns over other explorers (milestone 8 step 3, 2026-11-12)
 - **Seen:** in conifer forest (`144,48`) with four stand-in explorers around the player, one that showed only the tip of its head before is in plain view after. The fourth-nearest gets no opening, as designed.
@@ -650,12 +676,14 @@ Sid answered every item that was waiting, through the coordinating session. The 
 - **The sheer cliffs' rim** (item 33): "Keep it ragged". Walkable ground beside a cliff stays at its true heights, as built. No change.
 
 ### Waiting for Sid
+34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
+35. **A visible current on rivers and streams,** as slow streaks carried downstream.
+36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
+37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
 38. **Ground cover fades out between zoom 13 and 9.5,** and wind sway between 15 and 10 (milestone 8 step 2).
 39. **The pixel ratio never goes below 1,** so a screen whose own ratio is 1 is never made blurrier (milestone 8 step 2).
 40. **An edit shows two frames later, not in the same frame,** and the old mesh stays until then. In return no frame is ever spent building.
 41. **The limit for every unit test is 15 s, up from 5 s** (`vitest.config.ts`): see "Findings for Sid". Not an art decision, but outside this work's usual files.
 42. **Crowns thin over the three nearest other explorers,** a little less than over you (milestone 8 step 3). Beyond three, an explorer in a wood shows only as a name label.
-34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
-35. **A visible current on rivers and streams,** as slow streaks carried downstream.
-36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.
-37. **A gentler, irregular swell on all water,** replacing the two-wave swell whose glints fell into rows.
+43. **The moon has phases:** new to full and back over eight days, and a new-moon night is 28% darker than a full-moon one, with fainter moon shadows and brighter stars (milestone 8 step 4). The moon's hours do not change.
+44. **Each flower keeps to its season:** buttercups and marsh marigolds in spring, thrift, oxeye daisies and cotton-grass in summer, harebells into autumn, none in winter (milestone 8 step 4).

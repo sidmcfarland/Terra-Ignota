@@ -1,7 +1,7 @@
 import {
   CHUNK, Channel, SEA_LEVEL, Tile, TILE_COUNT, TileCache, channelSpans, getRegion, hash2, heightOf, landAt, newGround, perlin, rand2, regionOf,
 } from '@terra/shared';
-import { cover, rnd, seedRnd, sphereOf, type MeshData, type RGB } from './cover.ts';
+import { BLOOM, cover, rnd, seedRnd, sphereOf, type MeshData, type RGB } from './cover.ts';
 
 /**
  * Works out a chunk's mesh: the ground with its colours, baked shadows and sheer cliffs, the water over
@@ -134,7 +134,10 @@ const SEDGE_TIP: RGB = [176, 170, 104];
 const BILBERRY: readonly [RGB, RGB] = [[58, 84, 62], [108, 132, 88]];
 /** Frost that lies in the tundra's hollows all year, and the dark pools that stand in a marsh. */
 const FROST: RGB = [226, 232, 238], POOL: RGB = [56, 72, 70];
-/** Flowers stay paler than any explorer's colour. Oxeye white, buttercup, harebell, and sea thrift by the shore. */
+/**
+ * Flowers stay paler than any explorer's colour. Oxeye white, buttercup, harebell, and sea thrift by the shore.
+ * Marsh marigold is the buttercup's yellow and cotton-grass has a white of its own. Each keeps to its season.
+ */
 const WHITE: RGB = [244, 238, 220], YELLOW: RGB = [236, 204, 96], LILAC: RGB = [172, 160, 214], THRIFT: RGB = [226, 170, 184];
 
 /**
@@ -885,11 +888,11 @@ export class ChunkBuilder {
           facet[pk], facet[pk + 1], facet[pk + 2]);
       }
     };
-    const blooms = (count: number, color: RGB) => {
+    const blooms = (count: number, color: RGB, kind: number) => {
       for (let n = 0; n < count; n++) {
         spot();
         if (facet[pk + 6] < 0.8) continue;
-        cover.bloom(px, py, pz, 0.2 + 0.16 * rnd(), 0.07 + 0.04 * rnd(), rnd() * 3.1416, color);
+        cover.bloom(px, py, pz, 0.2 + 0.16 * rnd(), 0.07 + 0.04 * rnd(), rnd() * 3.1416, color, kind);
       }
     };
     const lump = (r: number, h: number, c: readonly [RGB, RGB], sway: boolean) => {
@@ -956,8 +959,8 @@ export class ChunkBuilder {
           else if (r < lush + 0.018) lump(0.2 + 0.14 * rnd(), 0.22 + 0.14 * rnd(), BUSH, true);
           else if (r < lush + 0.03) lump(0.12 + 0.2 * rnd(), 0.1 + 0.16 * rnd(), MOSSY, false);
           // Flowers spill out of the meadows, and thrift keeps to the shore.
-          if (h < 1.0 && rnd() < 0.1) blooms(2 + Math.floor(rnd() * 2), THRIFT);
-          else if (Math.abs(drift) > 0.3 && rnd() < 0.1) blooms(2, drift > 0 ? WHITE : YELLOW);
+          if (h < 1.0 && rnd() < 0.1) blooms(2 + Math.floor(rnd() * 2), THRIFT, BLOOM.thrift);
+          else if (Math.abs(drift) > 0.3 && rnd() < 0.1) blooms(2, drift > 0 ? WHITE : YELLOW, drift > 0 ? BLOOM.oxeye : BLOOM.buttercup);
           break;
         }
         case Tile.Meadow: {
@@ -968,7 +971,12 @@ export class ChunkBuilder {
           if (rnd() < 0.62) tuft(4, 0.26, 0.5, 0.055, 0.5, MEADOW_TIP, 0.8);
           // Each colony is mostly one flower, thick at its heart and thin at its edge.
           const thick = Math.min(1, Math.abs(drift - 0.02) * 2.6);
-          if (rnd() < 0.1 + 0.5 * thick) blooms(2 + Math.floor(rnd() * 3), drift < -0.1 ? YELLOW : drift > 0.14 ? LILAC : WHITE);
+          if (rnd() < 0.1 + 0.5 * thick) {
+            const count = 2 + Math.floor(rnd() * 3);
+            if (drift < -0.1) blooms(count, YELLOW, BLOOM.buttercup);
+            else if (drift > 0.14) blooms(count, LILAC, BLOOM.harebell);
+            else blooms(count, WHITE, BLOOM.oxeye);
+          }
           else if (rnd() < 0.012) lump(0.12 + 0.16 * rnd(), 0.1 + 0.12 * rnd(), STONE, false);
           break;
         }
@@ -980,7 +988,7 @@ export class ChunkBuilder {
             const n = 1 + Math.floor(rnd() * 3);
             for (let k = 0; k < n; k++) lump(0.05 + 0.07 * rnd(), 0.04 + 0.05 * rnd(), PEBBLE, false);
           }
-          if (h > 0.34 && rnd() < 0.04) blooms(2, THRIFT);
+          if (h > 0.34 && rnd() < 0.04) blooms(2, THRIFT, BLOOM.thrift);
           break;
         }
         case Tile.Water:
@@ -1048,7 +1056,7 @@ export class ChunkBuilder {
           else if (r < 0.4) lump(0.12 + 0.22 * rnd(), 0.07 + 0.1 * rnd(), LICHEN, false);
           else if (r < 0.44) lump(0.14 + 0.1 * rnd(), 0.08 + 0.05 * rnd(), HEATH_BUSH, true);
           else if (r > 0.992) tree(true, 0.4 + 0.2 * rnd());
-          if (drift < -0.12 && rnd() < 0.3) blooms(2 + Math.floor(rnd() * 3), COTTON);
+          if (drift < -0.12 && rnd() < 0.3) blooms(2 + Math.floor(rnd() * 3), COTTON, BLOOM.cotton);
           break;
         }
         case Tile.Marsh: {
@@ -1064,8 +1072,8 @@ export class ChunkBuilder {
             spot();
             reeds(3 + Math.floor(rnd() * 3), Math.max(0, level - py));
           }
-          if (rnd() < 0.07) blooms(2, YELLOW);
-          else if (rnd() < 0.04) blooms(2, COTTON);
+          if (rnd() < 0.07) blooms(2, YELLOW, BLOOM.marigold);
+          else if (rnd() < 0.04) blooms(2, COTTON, BLOOM.cotton);
           break;
         }
         case Tile.Stream: {

@@ -60,6 +60,30 @@ export function seasonAt(year: number, out: Season = { spring: 0, summer: 0, aut
   return out;
 }
 
+/**
+ * How far out each kind of flower is in spring, summer, autumn and winter (0 none, 1 all of them), by the
+ * kinds in cover.ts (`BLOOM`). Buttercups and marsh marigolds are spring flowers, thrift and oxeye daisies
+ * are at their best in summer, harebells come late and last into autumn, and nothing flowers in winter.
+ */
+const BLOOMING: ReadonlyArray<readonly [number, number, number, number]> = [
+  [1, 1, 1, 1], // not a flower
+  [0.7, 1, 0.15, 0], // thrift
+  [0.5, 1, 0.25, 0], // oxeye daisy
+  [1, 0.6, 0, 0], // buttercup
+  [0, 0.8, 1, 0], // harebell
+  [0.3, 1, 0.4, 0], // cotton-grass
+  [1, 0.3, 0, 0], // marsh marigold
+];
+
+/** How far out each kind of flower is at a point in the year, 0 to 1, indexed by kind. Index 0 is always 1. */
+export function bloomsAt(season: Season, out: number[] = []): number[] {
+  for (let k = 0; k < BLOOMING.length; k++) {
+    const b = BLOOMING[k];
+    out[k] = b[0] * season.spring + b[1] * season.summer + b[2] * season.autumn + b[3] * season.winter;
+  }
+  return out;
+}
+
 /** `#season=`: a name, or a point in the year from 0 to 4. Null follows the clock. */
 export function parseSeason(s: string | null | undefined): number | null {
   if (!s) return null;

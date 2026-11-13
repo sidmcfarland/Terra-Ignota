@@ -19,6 +19,8 @@ export interface DebugState {
   perf: PerfStats | null;
   /** The hour of the day being drawn (0–24), or null when not drawing. */
   hour: number | null;
+  /** How much of the moon is lit (0–1), or null when not drawing. */
+  moon: number | null;
   /** The strength of the wind being drawn (0–1), or null when not drawing. */
   wind: number | null;
   /** The weather and season being drawn, or null when not drawing. */
@@ -91,7 +93,7 @@ function amounts(of: object | null): string {
 }
 
 /** Renderer cost against the budgets in docs/ART_DIRECTION.md (12 ms, 150 draw calls, 300k triangles). */
-function perfLines({ perf, hour, wind, weather, season }: DebugState): string[] {
+function perfLines({ perf, hour, moon, wind, weather, season }: DebugState): string[] {
   if (!perf) return [];
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   const clock = hour === null ? '' : `${String(Math.floor(hour)).padStart(2, '0')}:${String(Math.floor((hour % 1) * 60)).padStart(2, '0')}`;
@@ -101,6 +103,7 @@ function perfLines({ perf, hour, wind, weather, season }: DebugState): string[] 
     `DRAW   ${perf.drawCalls} calls  ·  ${k(perf.triangles)} triangles  ·  ${perf.geometries} geometries  ·  ${perf.textures} textures`,
     `CHUNKS ${perf.chunkBuilds} built ${perf.chunkWorker ? 'on a worker' : 'on the main thread'}  ·  slowest ${perf.chunkBuildMax.toFixed(1)}ms  ·  ${perf.chunksMissing} missing`,
     `TIME   ${clock}  ·  #time=dawn|morning|noon|afternoon|golden|sunset|dusk|night or an hour holds it`,
+    `MOON   ${Math.round((moon ?? 1) * 100)}% lit  ·  #moon=new|crescent|half|gibbous|full or 0..1 holds it`,
     `WIND   ${(wind ?? 0).toFixed(2)}  ·  #wind=0..1 holds it`,
     `SKY    ${amounts(weather)}  ·  #weather=clear|broken|overcast|rain|storm|fog|snow holds it`,
     `YEAR   ${amounts(season)}  ·  #season=spring|summer|autumn|winter holds it`,

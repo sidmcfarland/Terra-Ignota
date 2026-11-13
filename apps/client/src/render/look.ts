@@ -18,8 +18,9 @@ import {
 } from 'three';
 import { rand2 } from '@terra/shared';
 import { airAt, makeAir, type Air } from './air.ts';
-import { hourAt, keyBody, lightAt, luminance, makeLight } from './day.ts';
-import { flashAt, seasonAt, weatherAt, yearAt, type Season, type Weather } from './weather.ts';
+import { BLOOM_KINDS } from './cover.ts';
+import { hourAt, keyBody, lightAt, luminance, makeLight, moonAt, moonOn } from './day.ts';
+import { bloomsAt, flashAt, seasonAt, weatherAt, yearAt, type Season, type Weather } from './weather.ts';
 import { steadyWind, windAt, type Wind } from './wind.ts';
 
 /**
@@ -163,6 +164,8 @@ export const U = {
   uFogBand: { value: new Vector3(0.3, 6, 0) },
   /** The year. x: spring; y: autumn; z: winter (each 0–1); w: how much snow lies, 0–1. */
   uSeason: { value: new Vector4(0, 0, 0, 0) },
+  /** How far out each kind of flower is, 0 to 1, by kind (see BLOOM in cover.ts); index 0 is everything else. */
+  uBloom: { value: new Array<number>(BLOOM_KINDS).fill(1) },
   /**
    * How much small detail the view is close enough to show. x: ground cover (1 full height, 0 gone);
    * y: wind sway (1 full, 0 still). Both fall to 0 as the view zooms out, where a blade of grass is
@@ -413,7 +416,8 @@ export function foliageMaterial(lift: number, doubleSided = false, leafy = false
     VERT_COMMON + /* glsl */ `
 attribute vec4 aColor;
 #ifndef USE_INSTANCING
-attribute vec3 aShade;
+attribute vec4 aShade;
+uniform float uBloom[${BLOOM_KINDS}];
 #endif
 varying vec3 vLit;
 varying float vReveal;
@@ -433,7 +437,23 @@ void main() {
   vec3 local = position;
   vec3 origin = vec3(position.x, position.y - aColor.a * ${lift.toFixed(2)}, position.z);
   vec3 n = normal;
-  vec3 shade = aShade;
+  vec3 shade = aShade.xyz;
+  // A flower is out only in its season, each a little earlier or later than its neighbours. It rises as
+  // it opens, and out of season it is not drawn at all. Its kind and its own lateness ride on its vertices.
+  float open = 1.0;
+  if (aShade.w > 0.0) {
+    float code = floor(aShade.w * 255.0 + 0.5), kind = floor(code / 32.0);
+    float late = (code - kind * 32.0) / 31.0 * 0.7;
+    open = smoothstep(late, late + 0.3, uBloom[int(kind)]);
+    if (open < 0.15) {
+      vLit = vec3(0.0);
+      vReveal = 0.0;
+      vFade = 1.0;
+      vMap = vec2(0.0);
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      return;
+    }
+  }
 #endif
   vec4 root = modelMatrix * vec4(origin, 1.0);
   float reveal = revealAt(root.xz);
@@ -501,7 +521,7 @@ void main() {
   float bend = wind.x * (tall * (1.0 - 0.35 * min(tall, 1.0)) + 0.07 * wind.y * min(tall * 4.0, 1.0));
   albedo *= 1.0 + 0.3 * (wind.x - 0.3 * uWind.z * uDetail.y) * min(tall * 4.0, 1.0);
   // Zoomed out, ground cover sinks into the ground it grew from (keeping its colour) before its mesh is dropped.
-  float stand = grow * uDetail.x;
+  float stand = grow * uDetail.x * open;
   vFade = 1.0;
 #endif
 #ifdef USE_INSTANCING
@@ -884,6 +904,10 @@ export class Look {
   fixedHour: number | null = null;
   /** The hour being shown. */
   hour = 12;
+  /** Hold the moon's phase (how much of it is lit, 0 new to 1 full), or null to follow the shared clock. */
+  fixedMoon: number | null = null;
+  /** How much of the moon is lit, 0–1. */
+  moon = 1;
   /** How much direct light there is, 0–1: what a small thing's own shadow should follow. */
   key = 1;
   private readonly light = makeLight();
@@ -910,9 +934,11 @@ export class Look {
   }
 
   update(focus: { x: number; y: number }, viewDir: Vector3, timeS: number) {
-    const hour = (this.hour = this.fixedHour ?? hourAt(Date.now()));
-    const L = lightAt(hour, this.light);
     const now = Date.now();
+    const hour = (this.hour = this.fixedHour ?? hourAt(now));
+    // The night is as bright as its moon: a full moon is the night in the table, a new moon is starlight.
+    const lit = (this.moon = this.fixedMoon ?? moonAt(now));
+    const L = moonOn(lightAt(hour, this.light), hour, lit);
     const S = seasonAt(this.fixedYear ?? yearAt(now), this.season), W = this.weather;
     if (this.fixedWeather) Object.assign(W, this.fixedWeather);
     else weatherAt(now, S, W);
@@ -974,11 +1000,13 @@ export class Look {
     U.uFogBand.value.y = 3.2 + 2.8 * Math.min(1, 2 * Math.max(W.fog, fall)) + 6 * W.fog;
     // A low sun (or, faintly, a low moon) rakes through the mist in beams that lie along its direction.
     const ground = Math.hypot(dir.x, dir.z) || 1, low = 1 - Math.min(1, Math.max(0, (dir.y - 0.1) / 0.4));
-    U.uShaft.value.set(-dir.z / ground, dir.x / ground, up * low * sunIn * (moon ? 0.15 : 0.38));
-    U.uAir.value.set(0, air.stars, W.cloud, this.cloudDrift);
+    U.uShaft.value.set(-dir.z / ground, dir.x / ground, up * low * sunIn * (moon ? 0.15 * lit : 0.38));
+    // With less moon the stars stand out more.
+    U.uAir.value.set(0, air.stars * (1.5 - 0.5 * lit), W.cloud, this.cloudDrift);
     // Snow lies through the winter, deeper while it is falling; a snowfall at any time leaves a dusting.
     U.uSeason.value.set(S.spring, S.autumn, S.winter, Math.max(S.winter * (0.55 + 0.45 * W.snow), 0.5 * W.snow));
     U.uRain.value = W.rain;
+    bloomsAt(S, U.uBloom.value);
 
     U.uSunBake.value.set(
       Math.asin(Math.max(0, dir.y)) / (Math.PI / 2),
@@ -992,7 +1020,7 @@ export class Look {
     // A lantern flame is never quite still.
     const flicker = 1 + 0.035 * Math.sin(timeS * 7.3) + 0.025 * Math.sin(timeS * 12.1 + 1.3);
     U.uLampColor.value.copy(this.lamp).multiplyScalar(1.3 * L.lamp * flicker);
-    this.key = up * sunIn * (moon ? 0.55 : 1);
+    this.key = up * sunIn * (moon ? 0.55 * (0.25 + 0.75 * lit) : 1);
 
     U.uViewDir.value.copy(viewDir);
     U.uFocus.value.set(focus.x, focus.y);

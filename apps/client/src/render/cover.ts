@@ -18,10 +18,20 @@ export interface MeshData {
   normal: Int8Array;
   /** Bytes: rgb, then a fourth that depends on the mesh (the ground's bedding, a plant's lift). */
   color: Uint8Array | Uint8ClampedArray;
-  /** Bytes: ambient occlusion, then the two baked horizons; the ground adds a fourth (dry or under water). */
+  /**
+   * Bytes: ambient occlusion, then the two baked horizons, then a fourth: for the ground, 255 where it is dry;
+   * for ground cover, 0 except on a flower, which carries its kind and when it opens (see `bloom`).
+   */
   shade: Uint8Array;
   sphere: Float32Array;
 }
+
+/**
+ * The kinds of flower. Each is out in its own part of the year (see `bloomsAt` in weather.ts), so the
+ * shader has to know which is which: the number goes on the flower's vertices.
+ */
+export const BLOOM = { thrift: 1, oxeye: 2, buttercup: 3, harebell: 4, cotton: 5, marigold: 6 } as const;
+export const BLOOM_KINDS = 7;
 
 /** The sphere around a list of points, as three.js would compute it: centred on their box. */
 export function sphereOf(p: Float32Array): Float32Array {
@@ -64,9 +74,11 @@ const cPos = new Float32Array(CAP * 3);
 const cNor = new Int8Array(CAP * 3);
 // Clamped, so colours and lifts can be written as plain numbers.
 const cCol = new Uint8ClampedArray(CAP * 4);
-const cShade = new Uint8Array(CAP * 3);
+const cShade = new Uint8Array(CAP * 4);
 let cv = 0;
 let s0 = 255, s1 = 0, s2 = 0;
+// What goes in a vertex's fourth shade byte: 0, or a flower's kind and when it opens.
+let flower = 0;
 // A lump's eight corners.
 const bx = new Float32Array(8), by = new Float32Array(8), bz = new Float32Array(8);
 const UP = [5, 5, 6, 6, 7];
@@ -76,7 +88,7 @@ function vert(x: number, y: number, z: number, nx: number, ny: number, nz: numbe
   cPos[o] = x; cPos[o + 1] = y; cPos[o + 2] = z;
   cNor[o] = nx; cNor[o + 1] = ny; cNor[o + 2] = nz;
   cCol[q] = r; cCol[q + 1] = g; cCol[q + 2] = b; cCol[q + 3] = lift * (255 / LIFT_UNIT);
-  cShade[o] = s0; cShade[o + 1] = s1; cShade[o + 2] = s2;
+  cShade[q] = s0; cShade[q + 1] = s1; cShade[q + 2] = s2; cShade[q + 3] = flower;
   cv++;
 }
 
@@ -105,9 +117,9 @@ export const cover = {
     cPos[o] = x - ax * w; cPos[o + 1] = y; cPos[o + 2] = z - az * w;
     cPos[o + 3] = x + ax * w; cPos[o + 4] = y; cPos[o + 5] = z + az * w;
     cPos[o + 6] = x + tx; cPos[o + 7] = y + h; cPos[o + 8] = z + tz;
-    for (let k = 0; k < 9; k += 3) {
+    for (let k = 0, j = q; k < 9; k += 3, j += 4) {
       cNor[o + k] = nx; cNor[o + k + 1] = ny; cNor[o + k + 2] = nz;
-      cShade[o + k] = s0; cShade[o + k + 1] = s1; cShade[o + k + 2] = s2;
+      cShade[j] = s0; cShade[j + 1] = s1; cShade[j + 2] = s2; cShade[j + 3] = 0;
     }
     // `rootLift` is for a blade that starts part-way up a plant (a seed head): how far its base is above the ground.
     const l0 = rootLift * (255 / LIFT_UNIT), l1 = (rootLift + h) * (255 / LIFT_UNIT);
@@ -116,13 +128,20 @@ export const cover = {
     cv += 3;
   },
 
-  /** A flower head: a small flat diamond held `h` above its root. */
-  bloom(x: number, y: number, z: number, h: number, size: number, turn: number, color: RGB) {
+  /**
+   * A flower head: a small flat diamond held `h` above its root. `kind` is one of BLOOM. Its vertices carry
+   * the kind (the top three bits of a byte) and a number of the flower's own (the other five) that makes it
+   * open a little earlier or later than its neighbours. That number is taken from `turn`, not drawn afresh,
+   * so adding it moved nothing that was already placed.
+   */
+  bloom(x: number, y: number, z: number, h: number, size: number, turn: number, color: RGB, kind: number) {
     if (cv + 6 > CAP) return;
+    flower = kind * 32 + (Math.floor(turn * 1000) & 31);
     const c = Math.cos(turn) * size, s = Math.sin(turn) * size, top = y + h;
     const v = (px: number, pz: number, k: number) => vert(px, top, pz, 0, 127, 0, color[0] * k, color[1] * k, color[2] * k, h);
     v(x + c, z + s, 1); v(x - s, z + c, 1); v(x - c, z - s, 0.9);
     v(x + c, z + s, 1); v(x - c, z - s, 0.9); v(x + s, z - c, 0.9);
+    flower = 0;
   },
 
   /**
@@ -177,6 +196,6 @@ export const cover = {
   end(): MeshData | null {
     if (!cv) return null;
     const position = cPos.slice(0, cv * 3);
-    return { position, normal: cNor.slice(0, cv * 3), color: cCol.slice(0, cv * 4), shade: cShade.slice(0, cv * 3), sphere: sphereOf(position) };
+    return { position, normal: cNor.slice(0, cv * 3), color: cCol.slice(0, cv * 4), shade: cShade.slice(0, cv * 4), sphere: sphereOf(position) };
   },
 };

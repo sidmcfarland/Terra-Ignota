@@ -211,6 +211,16 @@ export class GameView {
     return this.look.wind;
   }
 
+  /** How much of the moon is lit, 0 (new) to 1 (full). */
+  get moon(): number {
+    return this.look.moon;
+  }
+
+  /** Hold the moon's phase (how much of it is lit, 0 to 1), or pass null to follow the shared clock again. */
+  setMoon(lit: number | null) {
+    this.look.fixedMoon = lit;
+  }
+
   /** Hold the canvas at a pixel ratio (0.5 to 3), or pass null to let it follow the measured frame time again. */
   setPixelRatio(ratio: number | null) {
     this.fixedRatio = ratio === null ? null : Math.min(3, Math.max(0.5, ratio));
