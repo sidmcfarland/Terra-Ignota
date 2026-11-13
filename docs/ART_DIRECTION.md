@@ -575,7 +575,9 @@ Three changes Sid asked for, checked after they were made:
 - **The year.** A unit test pins a season at 100 game days and the year at 13 real days and 8 hours.
 
 ### Measured performance
-On the development machine only (desktop, GeForce GTX 1050, Chrome). **No phone has been tested; a real-device check is still owed.**
+The numbers below are from the development machine only (desktop, GeForce GTX 1050, Chrome).
+
+**First phone, 2026-11-13.** Sid played the production build of `main` on a Pixel 10, served over Tailscale HTTPS, and reported that it "works great". No frame times were read from the debug panel, so this is a judgement by eye, not a measurement. A Pixel 10 is a current flagship, well above the target. **Still owed:** frame times on a mid-range phone from about three years ago (the reference device), and the pixel-ratio governor acting on a real slow frame. Playing on the phone also showed there was no way to zoom by touch; pinch to zoom was added the same day.
 
 **After milestone 8, step 1 (sheer cliffs),** fully zoomed out in a 1277×1234 window. Walls add few triangles: a cliff tile goes from 2 triangles to between 6 and 12, and cliffs are about one tile in two hundred.
 
