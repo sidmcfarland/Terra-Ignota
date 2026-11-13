@@ -7,6 +7,12 @@ How the game looks and sounds (theme, style, palette, mood, performance budgets 
 ## Core loop
 The world is endless, generated from a seed, and starts out **unknown**. Explorers fog-reveal it together into a **shared atlas**. Players gather, build waystations and name places, and their discoveries persist for everyone.
 
+The M5 design ([M5_DESIGN.md](M5_DESIGN.md), decided with Sid on 2026-11-12) fills this in:
+- **Landmarks** placed by the seed (natural wonders, and wordless ruins and wrecks) are found, credited to their first finder and named. Each find hints at the next.
+- **Gathering depletes for everyone and regrows.** A felled tree is a stump for every player until its time is up.
+- **Building opens the world:** bridges cross deep water, steps cross snow and cliffs, trails are faster. **Waystations**, pooled by several players, are named places, spawn points and fast-travel stops.
+- **Tending and relics.** A piece is safe while its owner keeps visiting. Left 30 days it weathers and anyone may dismantle it; left 60 it becomes a permanent relic that later explorers find.
+
 ## Stack
 | Concern | Choice |
 |---|---|
@@ -38,7 +44,10 @@ infra/            docker-compose: signal + coturn + seed
 - **Sim**: the host ticks at 20 Hz. Players control their own movement and the host sanity-checks it (speed and collision). Co-op play allows lenient checks.
 - **Interest**: the host sends each client only the players within that client's view radius (48–128 tiles, whatever its screen shows), including players relayed from neighbouring zones. Positions travel in a compact binary encoding (see M6).
 - **Limits**: a host holds every link to message-rate and size budgets, and paces catch-up itself (see M6).
-- **World edits**: signed ops in a per-chunk CRDT (last-writer-wins per tile, ordered by Lamport clock + public key). They're replicated to peers in the zone and to the seed.
+- **World edits**: signed ops in layers (M5 slice 1). Each layer has a key, a merge rule and a scope:
+  - **Merge rule:** *last wins* (Lamport clock, then public key, then signature) or *first wins* (the earliest signed date). Either way replicas converge without consensus, whatever order ops arrive in. A layer may **expire**: its ops are dropped everywhere once they are older than the layer's lifetime.
+  - **Scope:** *zone* ops replicate to peers in the zone, to neighbouring hosts when near the border, and to the seed, by per-chunk digests. *World* ops (the atlas layers) go everywhere: every device holds them, hosts pass them to all neighbouring hosts, and the seed passes them to every host it is linked to. *Player* ops are held by their author's device, its current host and the seed only.
+  - Painting tiles is the `tile` layer. Every later mechanic (charting, finds, names, harvests, builds) is another layer, not another message.
 - **Discovery**: the signaling server keeps soft-state `world/zone → host` entries via heartbeats. It never sees gameplay. *Later:* replace it with a DHT or gossip.
 - **Join URL**: `https://<host>/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
 
@@ -51,7 +60,7 @@ infra/            docker-compose: signal + coturn + seed
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
 | M4 | Persistence: signed ops, CRDT, IndexedDB, seed peer | Edits survive everyone logging off | Done (e2e-tested): identity, signed tile ops, per-chunk CRDT, replication, IndexedDB, catch-up between peers, and the seed peer keeping edits on disk |
 | M4c | Natural terrain: layered climate and landform maps, then rivers and lakes by region simulation | One seed shows plains, ranges, cliffs, oceans, lakes and rivers that run downhill, identical on every device | **Built** 2026-11-12, protocol 9. Step 1: plains, ranges, cliffs, an ocean and six climates from layered maps. Step 2: rivers, streams and lakes at their own levels from a drainage simulation; every channel leads downhill to a lake or the sea, and regions agree at their edges. The same world hash in Node, Chromium and Bun (JavaScriptCore); **a run in Firefox or Safari is still owed**, and no phone was measured. See "Natural terrain" |
-| M5 | Gameplay: shared atlas/fog, gathering, building, naming, chat | Fun for a group session | |
+| M5 | Gameplay: shared atlas/fog, landmarks, gathering, building, tending and relics, naming, talk. Design: [M5_DESIGN.md](M5_DESIGN.md) | 3–5 people on a fresh world, at least one on a phone, play 45 minutes with no instructions and: chart 150+ squares, find and name 2+ landmarks, finish 1 waystation or bridge, and at least half ask to play again. Decay is checked apart, with the debug clock: jump a world 30 and 60 days and see pieces weather, get dismantled, become relics and get found | **Designed** 2026-11-12 (every decision confirmed by Sid). Built in 11 slices; see "M5: gameplay" |
 | M6 | Scale: bot swarm, interest management, rate limits, validation | 300 bots across zones stay stable | Built (protocol 7, e2e-tested), but the done-when is **not shown yet**: the one dev machine runs 100 bots across 4 zones stably and is out of CPU at 300. The measurements say the limit is the machine, not the design (see M6 results). Needs one run on bigger or several machines |
 | M7 | Infra: docker-compose on VPS, TLS, TURN creds (time-limited HMAC) | Strict-NAT player can join | |
 
@@ -291,12 +300,39 @@ The margin dominates, so a small region costs nearly as much as a large one. The
 - **The overview needs a region for every 3,072 tiles square it shows**: about 20 s for a full window at 16 tiles per pixel here, and beyond 120 regions it paints without rivers and filled lakes.
 - **M5's design:** Bridges now have rivers and lakes to cross, and fords are a thing to find. Its landmark and resource rules still need the new tiles (see step 1's findings).
 
+## M5: gameplay (designed 2026-11-12)
+The design is [M5_DESIGN.md](M5_DESIGN.md). Sid answered every question in it (its section 14) and confirmed the nine details it set without asking (section 15); the answers are also rows in "Decisions" below. It was written before M6 and M4c landed, so its protocol and tile numbers were corrected on 2026-11-13: slice 1 takes protocol 10, and `Bridge` and `Steps` take tile ids 19 and 20.
+
+**One engine change carries everything:** lasting edits become layered ops (see "World & networking model"). Every mechanic is then a layer, with no consensus and no trusted server.
+
+**How strong the protection is.** Nobody can forge another player's op. Ownership, decay, naming rights and inventory are checked by honest live hosts, the way reach and rate are today. That stops ordinary players and casual misuse. A modified client that feeds ops through catch-up, or a dishonest host, can get round them. Co-op accepted that bargain; hardening it is future work.
+
+**Build order.** Each slice is playable and testable on its own; the done-when for each is in M5_DESIGN.md, section 11. Slices 1 to 4 are the first playable: explore, chart, point, discover, name.
+
+| # | Slice | Status |
+|---|---|---|
+| 1 | Layered ops: the generic op, both merge rules, signed dates, expiry, three scopes, seed relay, `reject`, debug clock. No visible change | |
+| 2 | Charting and the atlas | |
+| 3 | Pointing: pings, emotes, quick phrases | |
+| 4 | Landmarks: discovery, credit, naming, rumours | |
+| 5 | Gathering, regrowth and the purse | |
+| 6 | Building: bridges, steps, trails, signposts, cairns | |
+| 7 | Waystations and Lookouts | |
+| 8 | Tending and decay | |
+| 9 | Relics and caches | |
+| 10 | The arc: journal, session card, titles, text chat, mute | |
+| 11 | Group playtest and decay check | |
+
 ## Open questions (M4 and M5)
 Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, replicated to every peer that has seen the chunk and to the seed, and they converge without consensus. These parts aren't designed yet:
 - **Catching up (answered in M4a):** when a client connects, it sends its host a digest per zone chunk (count, highest clock and a hash of its ops). The host sends the chunks where it differs and asks for the chunks where the client has edits, so both converge. A new host already holds its zone's edits: it was a client there.
 - **Keeping the seed in sync (answered in M4b):** the signal server tells each seed every zone's host and every change. The seed dials each host over WebRTC (`seed` links), syncs with the same digests clients use, and gets every edit the host spreads after that.
 - **Edits across zone borders (partly answered in M4a):** hosts pass edits to neighbouring hosts when the edit is within `BORDER_VIEW` of their zone. A player catches up on another zone's chunks only after moving into it.
-- **Scarcity and inventory:** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts). Options: each player owns their inventory as signed state, or the host or seed arbitrates for each chunk.
+- **Scarcity and inventory (answered by the M5 design):** a CRDT can't enforce rules that span the world ("only one player gets this ore", unique place names, inventory counts), so the design doesn't ask it to.
+  - *Scarcity* is shared depletion: a harvest is a signed `take` op that everyone merges and that expires when the source regrows. Two players harvesting at the same moment both get the yield.
+  - *Inventory* is a signed purse per player: running totals of everything gathered and spent, checked step by step by the live host.
+  - *Group builds* are pooled: each player's deposits are their own running-total record, and every peer derives completion from the sum.
+  - What the host checks, a modified client can get round between hosts. That is the bargain co-op already accepted (M5_DESIGN.md, section 1).
 
 ## Current limitations (what M2 left for later)
 - **Players pop in at the edge of the screen when zoomed far out.** A host sends players within at most 128 tiles of a client. At the widest zoom on a large monitor the screen shows about 167 tiles, so players appear a little inside its corners. Across a zone border the same applies.
@@ -310,7 +346,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **The seed's disk store is one append-only file per world** (`DATA_DIR/<world>.jsonl`). It's compacted on load when superseded lines dominate, and loaded whole per world.
 - **Anyone can run a seed and receive every world's edits.** That's fine while edits are public co-op data. Restricting it would need seed credentials on the signal server.
 - **Edit checks slow casual misuse but can't stop a determined griefer.** A host accepts a live edit only from its author, within 4 tiles of where it sees that player, and at most 10 a second. Catch-up is now pulled and paced by the host (M6): only chunks of its zone that it asked for, no more than the peer said it holds, within a budget. But catch-up edits can be older edits or another player's, so the host can't check reach on them: a client that reconnects can still deliver edits anywhere in the zone, at the catch-up budget's rate. Nothing bounds an edit's clock either. Real protection needs reputation (see Risks and the M6 findings).
-- **A rejected edit stays in the painter's own copy.** Nothing tells the client the host refused it, so the two disagree on that tile until it's edited again. The B key only paints adjacent tiles, so normal play doesn't hit this. The host should send rejections back.
+- **Every device holds the whole world's atlas layers.** World-scope ops go to every peer and are loaded whole. That is fine for hundreds of zones (a fully charted zone is about 14 kB); a big world needs per-zone summaries. M6 did not address it.
 - **Each device loads all its edits for a world at startup.** That's fine at today's sizes. Loading per chunk can wait until worlds grow.
 - **Identity is per device, not per player.** The Ed25519 key lives in IndexedDB, so clearing site data or switching devices makes a new identity. `peerId` is still a random id per tab, used only for connections.
 - **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 210 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
@@ -370,6 +406,35 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | Sessions book each tick against an ideal 20 Hz timeline | Timers that fire late (Node on Windows, busy tabs) then cost jitter instead of tick rate. After a long stall the timeline restarts, so ticks aren't replayed in a burst. |
 | The signal server lets a socket save up 200 messages | A new host relays an answer and candidates for every client of its zone at once after a takeover. A flat 50/s would have cut that off at about 15 clients. |
 | The e2e ports are configurable, and `E2E_REUSE=0` refuses a running server | Several checkouts and sessions test on one machine; reusing another checkout's server tests the wrong code. |
+| M5: fog lifts for everyone, by 32×32 map square | A constant drip of small rewards and a map the group visibly made together. Fine 8×8 cells cost three times the data; personal fog would make the world look different to each player. |
+| M5: charting and discovery are credited to whoever was first, by the author's signed date | "Who got there first" is the reward. Lamport clocks say nothing about which of two unsynced players was really first, so first-wins needs a wall clock. |
+| M5: atlas data travels world-wide, through hosts and the seed | The atlas is one shared map. The cost is that every device holds it (see "Current limitations"). |
+| M5: seed-placed landmarks, about 1.6 a zone | Charting alone has no peaks, and naming needs something worth naming. |
+| M5: landmarks are natural wonders and also ruins and wrecks, wordless | Sid's choice over natural wonders only. Player-made relics are the ruins with real stories. |
+| M5: rumours hint at the next landmark | There is always a next place to go, without an always-on compass. |
+| M5: materials come from terrain tiles (wood, stone, pigment) and from rare seed-placed nodes | The land itself is the resource, and a vein is a place worth marking. |
+| M5: two rare materials: copper for the waystation's lantern, crystal for the Lookout's lens | Each gives one big build a reason to travel. |
+| M5: everything gathered depletes for everyone and regrows | The land shows where people have been, and thinned woods push gatherers further out. |
+| M5: inventory is a signed ledger, kept as running totals per player | A full event log grows by about 250 bytes per harvest for ever; a local satchel can't be checked at all. |
+| M5: the build list and costs as designed (M5_DESIGN.md, section 6) | Deep water, snow and cliffs are the world's real walls; bridges and steps change where everyone can go. |
+| M5: trails and bridges are walked 25% faster | A route is worth building and worth keeping. |
+| M5: only its builder may change a piece | Nobody can wreck what you built. |
+| M5: a piece weathers after 30 untended days (anyone may dismantle it) and is a permanent relic after 60 | Sid's design: nothing abandoned clutters the map for ever unexamined, and what survives becomes the world's history. |
+| M5: tending is the owner walking into the piece's map square | It is play, not a chore: making the rounds. |
+| M5: everything degrades when weathered | Decay must be visible and matter, but never strand anyone: bridges and steps stay crossable. |
+| M5: relics are finds, rank up with age, and caches mature | It gives abandonment a value, and a builder a legacy. |
+| M5: waystations and Lookouts are pooled by several players | The session's group project. Per-player deposit records never conflict. |
+| M5: fast travel from station to station, plus a return to the last one | Stations move the start line outward without making distance meaningless. |
+| M5: the discoverer or founder names a place | Naming is the reward for finding or founding. |
+| M5: names and signs are free text, with a per-player mute | Word lists would be safer and much duller. Relic text is permanent (see the design's weak spots). |
+| M5: talk is pointing first (pings, emotes, quick phrases), text chat last | It works on a phone and across languages. |
+| M5: friends in other zones show as a headcount per zone | The signal directory already knows who is where. Exact positions would need the seed to relay gameplay. |
+| M5: existing test worlds are wiped at slice 1 | Decay needs a signed date on every piece; keeping old edits would need a permanent special case. |
+| M5: journal, session card, zone stamps and titles are in M5 | They are the session's arc: what you did today and what you have built. |
+| M5: the capsule becomes a code-built explorer figure | See ART_DIRECTION.md. |
+| M5: sounds are synthesised in code; fonts are IM Fell English and Alegreya Sans | See ART_DIRECTION.md. |
+| M5: the done-when is a group playtest with numbers, plus a debug-clock decay check | "Fun" needs something that can be counted, and 60 days can't be waited for. |
+| M5: ownership and decay are checked by the live host, not inside the merge rule | The same strength as every other check. A merge-level rule would be stronger against modified clients and make the store much more complex. |
 
 ## Risks
 - **Backgrounded tabs throttle timers**, so a hidden tab hands off hosting immediately.

@@ -2,6 +2,8 @@
 
 **Status: decided with Sid on 2026-11-12.** Every answer is recorded in [section 14](#14-decisions). A few details were set without asking; they are listed in [section 15](#15-defaults-set-without-asking), and Sid confirmed them too. Architecture is in [PLAN.md](PLAN.md); the look is in [ART_DIRECTION.md](ART_DIRECTION.md). Numbers (radii, costs, times) are starting values to tune in play.
 
+**Numbers corrected on 2026-11-13.** This design was written before M6 and M4c landed. M6 took protocol 7, M4c took protocols 8 and 9 and tile ids 10 to 18, so slice 1 moves `PROTOCOL_VERSION` from 9 to 10, and `Bridge` and `Steps` take tile ids 19 and 20. Nothing decided in sections 14 and 15 changed.
+
 ## 0. The loop in one screen
 
 - **Walk into blank parchment.** Each 32×32 map square you enter inks in for everyone and goes on the shared atlas with your name and the date.
@@ -55,7 +57,7 @@ interface Op {
 - **A refused op is sent back** (`reject`), so the client undoes it. This closes the "rejected edit stays in the painter's copy" limitation in PLAN.md.
 - **Existing test worlds are wiped.** One op format, signed as `ti-op:1|world|l|x|y|v|clock|at|author`.
 - **Seed:** stores every layer in the same append-only file, drops expired `take`s when it compacts, relays atlas layers, keeps each player's latest `purse`.
-- **`PROTOCOL_VERSION` 6 → 7.**
+- **`PROTOCOL_VERSION` 9 → 10.**
 - **Debug clock:** a `#now=+45d` hash parameter shifts a device's clock, so decay and regrowth can be tested without waiting.
 
 **How strong the protection is, for every mechanic.** Nobody can forge another player's op. A host can drop or delay ops (they still spread later through the author, the seed or the next host). Ownership, decay, naming rights and inventory are enforced by honest live hosts, the same way reach and rate are today: that stops ordinary players and casual misuse. A modified client that feeds ops through the catch-up path, or a dishonest host, can get round them: back-date `at` to take a first-finder credit, overwrite someone's piece, mint an "old" cache, inflate a purse. PLAN.md accepted that bargain for co-op. Hardening it (ownership inside the merge rule, reputation) is future work.
@@ -171,8 +173,8 @@ Not in PLAN.md's M5 list. Added because charting alone has no peaks, and naming 
 |---|---|---|---|---|
 | **Trail** | `tile` | Free | Land | Walk 25% faster. A "blaze trail" toggle lays it under you as you walk. |
 | **Wall** | `tile` | 1 stone | Land | Blocks movement. |
-| **Bridge** (new tile) | `tile` | 2 wood | Generated water or deep water | Walkable, at trail speed. Opens far shores and islands. |
-| **Steps** (new tile) | `tile` | 2 stone | Generated snow | Walkable. Opens mountain passes. |
+| **Bridge** (new tile, id 19) | `tile` | 2 wood | Generated water or deep water | Walkable, at trail speed. Opens far shores and islands. |
+| **Steps** (new tile, id 20) | `tile` | 2 stone | Generated snow | Walkable. Opens mountain passes. |
 | **Signpost** | `sign` | 2 wood, 1 pigment | Land | Up to 60 characters, in the world and on the atlas. |
 | **Cairn** | `sign` | 3 stone | Land | A wordless marker in your colour. |
 | **Waystation** | `way` + `give` | 20 wood, 15 stone, 5 pigment, 3 copper, pooled | Land in a charted square, 64+ tiles from another | Named place, fast-travel stop, spawn point. |
@@ -328,7 +330,7 @@ Each slice is playable and testable on its own. Slices 1–4 are the **first pla
 
 | # | Slice | Done when |
 |---|---|---|
-| 1 | **Layered ops.** Generic `Op`, both merge rules, `at`, expiry, the three scopes, seed relay, `reject`, debug clock, protocol 7, wiped worlds. No visible change. | Existing e2e passes on the new format. Unit tests cover both merge rules and expiry in any order. Two browsers in different zones converge on a world-scope op; the seed keeps it across a restart. |
+| 1 | **Layered ops.** Generic `Op`, both merge rules, `at`, expiry, the three scopes, seed relay, `reject`, debug clock, protocol 10, wiped worlds. No visible change. | Existing e2e passes on the new format. Unit tests cover both merge rules and expiry in any order. Two browsers in different zones converge on a world-scope op; the seed keeps it across a restart. |
 | 2 | **Charting and the atlas.** Sight disc, `chart`, fog mask, atlas screen with squares, credits, players, zone headcounts. | Browser A walks; B sees the same squares ink in within a second, in the world and on the atlas. They survive everyone leaving. The atlas pans and zooms on a phone-sized viewport. |
 | 3 | **Pointing.** Pings, emotes, quick phrases, `act` relay. | A ping from A shows in B's world and atlas, including from a neighbouring zone, and is rate-limited. |
 | 4 | **Landmarks.** `landmarkAt`, 11 types, discovery, credit, naming, rumours, `who`. | Both browsers place the same landmark on the same tile. Two simultaneous finders agree on one credit. A name shows on both atlases and survives a reload. |
@@ -434,7 +436,9 @@ Footsteps, ambience and music belong to the visual and audio foundation, not thi
 
 ## 13. Changes to make elsewhere
 
-Not made here: other sessions are editing these files.
+When this design was written, other sessions were editing these files, so the changes were listed here to make later.
+
+**Status (2026-11-13):** made with slice 1, adjusted to what M6 and M4c had changed by then. Items that describe something a later slice builds were held back for that slice: in PLAN.md's "Current limitations", everything except the rejected-edit and whole-atlas items, and the signal server's headcount per zone; in CLAUDE.md, the `landmarkAt` and `nodeAt`, per-tile speed and decay conventions. PLAN.md has no list of URL hash parameters, so `now` is in CLAUDE.md's.
 
 **docs/PLAN.md**
 - Core loop: add landmarks, depletion and regrowth, tending and relics; waystations are spawn and fast-travel points.
@@ -457,8 +461,8 @@ Not made here: other sessions are editing these files.
 - URL hash parameters: `now=+45d`.
 
 **Code (for the build sessions, not this one)**
-- `packages/shared`: `edits.ts` → layered `Op` store with expiry; new decay module (state from `at`, `tend`, `now`); `protocol.ts` → messages in sections 1, 6 and 9, version 7; `worldgen.ts` → `Tile.Bridge`, `Tile.Steps`, `landmarkAt`, `nodeAt`; `movement.ts` → per-tile, state-aware speed.
-- **Coordinate with the M6 session:** it is adding rate limits, validation and possibly a binary encoding. M5's messages and host checks should land on whatever M6 settles, and only one of the two should bump `PROTOCOL_VERSION` at a time.
+- `packages/shared`: `edits.ts` → layered `Op` store with expiry; new decay module (state from `at`, `tend`, `now`); `protocol.ts` → messages in sections 1, 6 and 9, version 10 at slice 1; `worldgen.ts` → `Tile.Bridge` (19), `Tile.Steps` (20), `landmarkAt`, `nodeAt`; `movement.ts` → per-tile, state-aware speed.
+- **M6 is merged** (it was in progress when this was written). M5's messages and host checks build on what it settled: the binary codec for the unreliable channel, per-link budgets (`limits.ts`) and catch-up pulled by the host. Reliable messages, ops included, stay JSON.
 
 ## 14. Decisions
 

@@ -10,6 +10,7 @@ Each entry is marked **Decided** (Sid agreed), **Proposed** (a starting point no
 - **The unexplored world is blank parchment.** As players explore, the land "inks in" and rises from the map into a 3D miniature.
 - **Everything players make together is cartography:** the atlas, place names, waystations and markers use old map-making language (ink lines, compass roses, hand-lettered labels, cartouches).
 - **The player is an explorer and map-maker,** not a fighter. Nothing in the look should suggest combat or threat.
+- **The land is uncharted, not untouched** (M5 design, decided 2026-11-12). The seed places old ruins and wrecks among its natural wonders: an overgrown gate, a ruined tower, a shipwreck, standing stones. They are wordless, with no inscriptions or lore. The world's real history is what players build and then leave: after 60 untended days a piece becomes a relic, grown into the land, for later explorers to find.
 
 ## Visual style
 **Decided: a low-poly diorama on a parchment map.**
@@ -30,7 +31,7 @@ Each entry is marked **Decided** (Sid agreed), **Proposed** (a starting point no
 ## Mood
 **Decided in outline; the wording is Proposed.**
 
-- **Quiet wonder.** The feeling of unfolding a map of somewhere nobody has been.
+- **Quiet wonder.** The feeling of unfolding a map of somewhere nobody has charted. (It read "somewhere nobody has been" until the M5 design put ruins in the world.)
 - **Calm, warm and unhurried.** Low sun, long soft shadows, gentle motion. Never busy, never harsh.
 - **Alive in small ways.** Grass moves, light shifts, water laps, dust drifts. The world should feel inhabited by weather and time even when no player is near.
 - **Shared, not lonely.** Other explorers and what they built should read as welcome signs of company.
@@ -259,8 +260,10 @@ The colours of the light change through the day. They are in "Time of day" below
 | Props, structures, landmarks, characters | Low-poly geometry, built in code or as `.glb` (glTF) | One shared palette or ramp texture. Instanced. |
 | UI icons, atlas map symbols, UI chrome, cursors, app icons | SVG | |
 | Particle sprites, paper grain, ink masks | Small PNG or generated at load | |
-| Fonts | Two open-licence faces | A cartographic display face for place names; a clean face for UI. Not chosen yet. |
+| Fonts | Two open-licence faces | **IM Fell English** for place names and cartouches; **Alegreya Sans** for the interface (decided 2026-11-12). Both are believed to be under the SIL Open Font License: confirm at download. First needed in M5 slice 2. |
 | Ambient beds, sound effects, music | See "Audio" | |
+
+**The production list is [M5_DESIGN.md](M5_DESIGN.md), section 12:** every model, shader and effect, atlas symbol, icon, piece of UI chrome, font and sound M5 needs, each with the slice that first needs it. Assets are made slice by slice from that list, not ahead of it.
 
 **What can be made well in code, and what can't:**
 - **Strong:** low-poly models, SVG, shaders, procedural particle textures.
@@ -268,12 +271,11 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Not possible in code:** high-quality rigged character animation, recorded audio, painted art. CC0 packs or a paid artist or composer would close this gap later. Downloading any pack needs Sid's OK.
 
 ## Audio
-**Proposed direction; the source is Open.**
+**The source is Decided (2026-11-12): every sound is synthesised in code** (the alternative was mixing in CC0 packs). The direction below is still Proposed. The sounds M5 needs are listed in M5_DESIGN.md, section 12; footsteps, ambience and music belong to the visual and audio foundation, not that list.
 
 - **Ambient beds** per biome plus wind, sea, rain, night and caves.
 - **Sound effects** for footsteps per surface, gathering, building, discovery, the atlas inking in, and UI.
 - **Music:** calm exploration stems that layer with play, plus short stingers for discoveries and naming.
-- **Open:** synthesise everything in code, or mix in CC0 packs.
 
 ## Technical constraints
 **Decided.**
@@ -283,6 +285,7 @@ The colours of the light change through the day. They are in "Time of day" below
 - **Stack:** Three.js (`three` ^0.170) under Vite. WebGL, not WebGPU.
 - **Terrain is a pure function of `(seed, x, y)`** and is never sent over the network. Changing `tileAt` or `elevationAt` in `packages/shared` changes every existing world. Visual work must not change them without flagging it to Sid.
 - **Decoration must be deterministic.** Anything placed on the world (trees, rocks, grass) is derived from the seed and position, so every player sees the same place. It is client-only and must not affect walkability or any rule in `packages/shared`.
+- **Landmarks and resource nodes will be frozen the same way.** M5 adds `landmarkAt` (slice 4) and `nodeAt` (slice 5) to `packages/shared`: overlays that place landmarks and veins from the seed without touching `tileAt` or `elevationAt`. Once each ships, changing its constants moves every landmark or node and orphans what players found and named there, so it is frozen like the terrain.
 - **`packages/shared` stays isomorphic:** no DOM or Three.js there.
 - **`#render=0` must keep working.** The e2e tests load the game without rendering.
 - **Players can edit tiles** (Path, Wall, back to generated). A chunk's mesh is rebuilt when an edit lands. The rebuild jumps the queue and the old mesh stays on show until the new one is ready, two frames later on the development machine.
@@ -400,12 +403,16 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
+| 2026-11-12 | Ruins and wrecks stand in the world, wordless; player-made relics are its history | Sid's choice in the M5 design (question 5) over natural wonders only. Four ancient landmark types, one landmark in three, no inscriptions or lore. |
+| 2026-11-12 | The playing piece becomes a code-built explorer figure: hat, satchel, a cloak in the player's hue, procedural motion | M5 design, question 21. It is first needed in slice 5 (gathering), where the figure leans into its work. |
+| 2026-11-12 | All M5 sounds are synthesised in code | M5 design, question 22. One source keeps the sound of the game as consistent as its look, and adds nothing to the download. |
+| 2026-11-12 | Fonts: IM Fell English for place names and cartouches, Alegreya Sans for the interface | M5 design, question 23. An engraver's face for the map and a clean, warm face for reading. |
+| 2026-11-12 | M5's assets are produced slice by slice from the list in M5_DESIGN.md, section 12 | The mechanics are designed now, which is what the 2026-11-11 decision waited for. |
 
 ## Open questions
-- **Audio source:** synthesised in code only, or mixed with CC0 packs?
 - **References:** does Sid have specific works in mind?
-- **Fonts:** which two faces?
-- **M5 mechanics** (gathering, building, naming, the atlas, chat) aren't designed. The props, structures, resources, icons and sounds they need wait on that.
+
+Answered by the M5 design (2026-11-12): the audio source (synthesised in code), the fonts (IM Fell English and Alegreya Sans) and the M5 mechanics themselves (M5_DESIGN.md).
 
 ## Visual foundation backlog
 The session building the visual foundation owns this section. It records the ordered backlog, what's done, the measured performance and anything waiting for Sid's approval, so a later session can pick up from it. Work is on the branch `claude/visual-foundation-f5eaa1`, one commit per milestone, not pushed.
@@ -457,6 +464,12 @@ The order is by how much each step decides the look of everything after it. Each
 - **Only four lanterns light the land at once** (yours and the three nearest). A crowd of explorers at night would need a cheaper way to show the rest, such as a glow sprite.
 - **Lantern light is not shadowed.** It passes through hills and trees. It reaches 7.5 tiles, so this is hard to see.
 - **The moving circle is temporary.** Sid approved the parchment, the graticule and the fade at the edge (2026-11-12), and noted that the M5 design replaces the moving circle with charted squares that stay inked in. `revealAt` in `look.ts` is the one place to change.
+
+### What M5 needs from the renderer
+From M5_DESIGN.md (sections 2, 4, 7 and 12). None of it is built; each item belongs to the M5 slice named.
+- **The known world becomes a mask, not a circle** (slice 2). The mask is the charted map squares near the camera plus a soft sight disc of about 10 tiles around each explorer. It feeds the same ink-in edge the circle feeds today, through `revealAt` in `look.ts`. Charted squares stay inked in, so explored land no longer closes up behind the player: this is what replaces "the moving circle is temporary" under "Kept for later".
+- **A tree must be swappable on its own** (slice 5). A felled tree is a stump, then a sapling, until it regrows. The swap has to toggle one instance, not rebuild the chunk's mesh, and visible chunks re-check regrowth about once a minute. Quarried rock and picked meadow are a vertex colour on the tile, not geometry.
+- **One weathering treatment for every built piece** (slice 8): moss tint, sag, dropped parts and a faded hue, all driven by one value from 0 to 1, so no piece needs a second model. Trail overgrowth, wall rubble and the fallen cairn use it too.
 
 ### Findings for Sid
 - **Worldgen had one climate.** Answered by M4c (merged 2026-11-12): six climates, real cliffs, and lakes apart from the sea. Milestone 7 styles them.
