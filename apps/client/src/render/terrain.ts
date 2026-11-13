@@ -222,6 +222,8 @@ interface Chunk {
   ground: BufferGeometry;
   water: BufferGeometry | null;
   cover: BufferGeometry | null;
+  /** The mesh that draws `cover`, so it can be left out when the view is too far out to show it. */
+  coverMesh: Mesh | null;
   trees: InstancedMesh[];
   /** Baked shade at the chunk's tile corners (N by N, three bytes each), for shading what stands on it. */
   shade: Uint8Array;
@@ -302,6 +304,7 @@ export class Terrain {
   private chunks = new Map<string, Chunk>();
   private readonly tiles: TileCache;
   private readonly heights: HeightField;
+  private showCover = true;
   /** The channel spans of each drainage region met so far: ax, ay, bx, by (upstream end to downstream end), kind. */
   private spans = new Map<string, Float32Array>();
   /** Chunks whose generated tiles this renderer has already asked for (so they're in the tile cache). */
@@ -364,7 +367,9 @@ export class Terrain {
     return out.set(c.shade[i] / 255, c.shade[i + 1] / 255, c.shade[i + 2] / 255);
   }
 
-  update(camX: number, camY: number, radius: number) {
+  /** `cover` is how much of the ground cover the view is close enough to show, 0 to 1 (see uDetail in look.ts). */
+  update(camX: number, camY: number, radius: number, cover = 1) {
+    this.showCover = cover > 0.1;
     const ccx = Math.floor(camX / CHUNK), ccy = Math.floor(camY / CHUNK);
     // Chunks that touch the circle of the given radius.
     const near = (cx: number, cy: number, pad: number) => {
@@ -400,6 +405,9 @@ export class Terrain {
       const [cx, cy] = key.split(',').map(Number);
       if (!near(cx, cy, 2 * CHUNK)) this.drop(key);
     }
+
+    // Ground cover is not drawn at all once it has sunk away.
+    for (const c of this.chunks.values()) if (c.coverMesh) c.coverMesh.visible = this.showCover;
 
     // Trees standing wholly beyond the radius are not drawn: nothing out there is inked in.
     for (const c of this.chunks.values()) for (const mesh of c.trees) {
@@ -1238,8 +1246,11 @@ export class Terrain {
       group.add(new Mesh(water, waterMat));
     }
 
-    const coverGeo = cover.end();
-    if (coverGeo) group.add(new Mesh(coverGeo, coverMat));
+    const coverGeo = cover.end(), coverMesh = coverGeo ? new Mesh(coverGeo, coverMat) : null;
+    if (coverMesh) {
+      coverMesh.visible = this.showCover;
+      group.add(coverMesh);
+    }
 
     const trees: InstancedMesh[] = [];
     const m = new Matrix4(), q = new Quaternion(), p = new Vector3(), sc = new Vector3(), up = new Vector3(0, 1, 0);
@@ -1276,6 +1287,6 @@ export class Terrain {
       trees.push(mesh);
      }
     }
-    return { group, ground, water, cover: coverGeo, trees, shade: cornerShade.slice() };
+    return { group, ground, water, cover: coverGeo, coverMesh, trees, shade: cornerShade.slice() };
   }
 }

@@ -163,6 +163,12 @@ export const U = {
   uFogBand: { value: new Vector3(0.3, 6, 0) },
   /** The year. x: spring; y: autumn; z: winter (each 0–1); w: how much snow lies, 0–1. */
   uSeason: { value: new Vector4(0, 0, 0, 0) },
+  /**
+   * How much small detail the view is close enough to show. x: ground cover (1 full height, 0 gone);
+   * y: wind sway (1 full, 0 still). Both fall to 0 as the view zooms out, where a blade of grass is
+   * under three pixels tall and a swaying crown moves less than one: the work is skipped, not just hidden.
+   */
+  uDetail: { value: new Vector2(1, 1) },
   /** How hard it is raining, 0–1: the land is darker when wet, and the water is pocked. */
   uRain: { value: 0 },
   /** The air. x: unused; y: stars showing in still water, 0–1; z: broken cloud, 0–1; w: how far the cloud shadows have drifted, in tiles. */
@@ -194,6 +200,7 @@ uniform vec4 uWind;
 uniform vec4 uFog;
 uniform vec3 uFogBand;
 uniform vec4 uSeason;
+uniform vec2 uDetail;
 uniform float uRain;
 uniform vec4 uAir;
 uniform vec3 uShaft;
@@ -444,7 +451,8 @@ void main() {
   float rise = riseOf(reveal);
   // Things stand up a little after the ground under them has risen.
   float grow = smoothstep(0.62, 1.0, reveal);
-  vec2 wind = windAt(root.xz);
+  // Zoomed far out, nothing is seen to sway: the wind is not worked out at all.
+  vec2 wind = uDetail.y > 0.0 ? windAt(root.xz) * vec2(uDetail.y, 1.0) : vec2(0.0);
   vec3 downwind = vec3(uWind.x, 0.0, uWind.y);
 #ifdef USE_INSTANCING
   // A tree is stiff: its crown leans a little and rocks slowly. Neighbours rock nearly together, because
@@ -482,12 +490,17 @@ void main() {
   // grow with height: a reed four times as tall as a grass blade quivers by the same small amount.
   float tall = aColor.a * ${lift.toFixed(2)};
   float bend = wind.x * (tall * (1.0 - 0.35 * min(tall, 1.0)) + 0.07 * wind.y * min(tall * 4.0, 1.0));
-  albedo *= 1.0 + 0.3 * (wind.x - 0.3 * uWind.z) * min(tall * 4.0, 1.0);
+  albedo *= 1.0 + 0.3 * (wind.x - 0.3 * uWind.z * uDetail.y) * min(tall * 4.0, 1.0);
+  // Zoomed out, ground cover sinks into the ground it grew from (keeping its colour) before its mesh is dropped.
+  float stand = grow * uDetail.x;
   vFade = 1.0;
+#endif
+#ifdef USE_INSTANCING
+  float stand = grow;
 #endif
   // Lean downwind, dipping a little so nothing stretches.
   vec3 lean = downwind * bend - vec3(0.0, 0.5 * bend * bend / max(tall, 0.05), 0.0);
-  vec4 world = modelMatrix * vec4(origin + (local - origin + lean) * grow, 1.0);
+  vec4 world = modelMatrix * vec4(origin + (local - origin + lean) * stand, 1.0);
   world.y = mix(-0.03, world.y, rise);
   vec3 light = lightOn(n, shade.x, bakedShadow(shade, root.xz)) + lampOn(world.xyz, n) * shade.x;
   vLit = mix(uParchment * uPaperLight * 0.8, mistOn(albedo * light, world.xyz, 1.0), grow);

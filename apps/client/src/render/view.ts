@@ -15,6 +15,7 @@ import {
 import type { PlayerInfo, TileCache } from '@terra/shared';
 import { LAMPS, LAMP_HEIGHT, Look, PALETTE, REVEAL_RADIUS, U, blobShadowMaterial, paperMaterial, solidMaterial } from './look.ts';
 import type { Air } from './air.ts';
+import { PixelRatioGovernor } from './governor.ts';
 import { Motes } from './motes.ts';
 import { Precipitation } from './precip.ts';
 import { Terrain } from './terrain.ts';
@@ -65,6 +66,12 @@ interface Avatar {
   hue: number;
   name: string;
 }
+
+/** 0 below `a`, 1 above `b`, and a smooth rise between. */
+const ramp = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
 
 /** Half-width of an explorer's shadow, in tiles, and the piece's height. */
 const SHADOW_R = 0.27, PAWN_H = 0.9;
@@ -142,11 +149,14 @@ export class GameView {
   private frameTimes = new Float32Array(PERF_FRAMES);
   private cpuTimes = new Float32Array(PERF_FRAMES);
   private perfI = 0;
+  /** Draws the canvas coarser when frames run late, and finer again when they have not for a while. */
+  private governor = new PixelRatioGovernor(devicePixelRatio);
+  private fixedRatio: number | null = null;
   private lampDist = new Float64Array(LAMPS);
 
   constructor(tiles: TileCache) {
     this.renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    this.renderer.setPixelRatio(this.governor.ratio);
     this.renderer.setClearColor(PALETTE.parchment);
     this.canvas = this.renderer.domElement;
 
@@ -191,6 +201,12 @@ export class GameView {
   /** The wind being shown: the direction it blows toward and its strength, 0–1. */
   get wind(): { x: number; y: number; strength: number } {
     return this.look.wind;
+  }
+
+  /** Hold the canvas at a pixel ratio (0.5 to 3), or pass null to let it follow the measured frame time again. */
+  setPixelRatio(ratio: number | null) {
+    this.fixedRatio = ratio === null ? null : Math.min(3, Math.max(0.5, ratio));
+    this.renderer.setPixelRatio(this.fixedRatio ?? this.governor.ratio);
   }
 
   /** Hold the wind at a strength (0–1), or pass null to follow the shared clock again. */
@@ -257,11 +273,15 @@ export class GameView {
     this.camera.updateProjectionMatrix();
     this.viewDir.set(cp * Math.sin(this.yaw), Math.sin(PITCH), cp * Math.cos(this.yaw));
     this.look.update(self, this.viewDir, now / 1000);
+    // Small things fade as the view zooms out (zoom is CSS pixels to a tile): ground cover sinks away
+    // between 13 and 9.5, where a blade is under three pixels tall, and sway stills between 15 and 10.
+    const cover = ramp(9.5, 13, zoom);
+    U.uDetail.value.set(cover, ramp(10, 15, zoom));
 
     // Ground seen at this pitch stretches ~1/sin(pitch) vertically.
     const radius = Math.hypot(w, h / Math.sin(PITCH)) / zoom / 2;
     // Beyond the known world there is only parchment, so there is nothing to build or draw.
-    this.terrain.update(self.x, self.y, Math.min(radius, REVEAL_RADIUS + 4));
+    this.terrain.update(self.x, self.y, Math.min(radius, REVEAL_RADIUS + 4), cover);
     // The paper is far below the land, so it has to reach further up the screen to fill the view.
     const reach = (radius + Math.abs(PAPER_Y) / Math.tan(PITCH)) * 2.2;
     this.paper.position.set(target.x, PAPER_Y, target.z);
@@ -304,6 +324,9 @@ export class GameView {
 
     const i = this.perfI++ % PERF_FRAMES;
     this.frameTimes[i] = now - this.lastFrame;
+    // A hidden tab's frames come seldom and late; they say nothing about how fast the device draws.
+    const ratio = document.hidden ? null : this.governor.sample(now - this.lastFrame);
+    if (ratio !== null && this.fixedRatio === null) this.renderer.setPixelRatio(ratio);
     this.cpuTimes[i] = performance.now() - now;
     this.lastFrame = now;
   }

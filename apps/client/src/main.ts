@@ -50,6 +50,9 @@ async function main() {
   view.setWind(parseWind(new URLSearchParams(location.hash.slice(1)).get('wind')));
   // `#weather=rain` and `#season=autumn` hold the sky and the year in the same way.
   view.setWeather(new URLSearchParams(location.hash.slice(1)).get('weather'));
+  // `#pr=1.5` holds the canvas at a pixel ratio; without it the ratio follows the measured frame time.
+  const pr = Number(new URLSearchParams(location.hash.slice(1)).get('pr'));
+  if (pr > 0) view.setPixelRatio(pr);
   view.setSeason(parseSeason(new URLSearchParams(location.hash.slice(1)).get('season')));
   document.getElementById('game')!.appendChild(view.canvas);
 
