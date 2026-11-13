@@ -179,6 +179,7 @@ The colours of the light change through the day. They are in "Time of day" below
 - **It follows the wall clock, not the network,** like the time of day. Every explorer feels the same breeze.
 - **`#wind=0.8`** holds the wind at a strength from the prevailing direction; `window.__ti.view.setWind(s)` does the same and `setWind(null)` returns to the clock. The debug panel shows the strength.
 - **Tree crowns thin out where they would hide you.** Crowns standing between your explorer and the eye are drawn as a faint scatter of their own pixels, so you can see yourself among the trunks. There is no blending and no sorting.
+- **They thin over other explorers too** (milestone 8): the three nearest, the same ones whose lanterns show. The opening is a little smaller than your own and its crowns a little less bare (three pixels in ten kept at its heart, against two in ten over you), so you stay the subject. Company is not lost under the canopy.
 
 ## Weather and seasons
 **Decided.** Chosen in visual-foundation milestone 5 and approved by Sid on 2026-11-12, with the year's length set by him and the snow's drifts corrected (both below). The code is `apps/client/src/render/weather.ts` (the sky and the year, from the clock), the `Look` class in `look.ts` (which bends the lights, wind and mist by them), the season and snow code in the ground and foliage shaders, and `precip.ts` (rain and snow in the air).
@@ -374,6 +375,7 @@ As of visual-foundation milestone 7 (2026-11-12). Update this section as the vis
 | 2026-11-12 | The pixel ratio follows measured frame time, between the screen's own (capped at 2) and 1 | Pixels are most of a phone's frame cost, and sharpness is the cheapest thing to trade for 60 frames a second. Sid's steer for milestone 8. |
 | 2026-11-12 | Chunk meshes are built in a worker, asked for 8 tiles ahead of the view, and shown in place of the old mesh when ready | Building a chunk was the last main-thread cost that scaled with the device: 4 to 30 ms here, several times that on a phone. Sid's steer for milestone 8. |
 | 2026-11-12 | The chunk worker and the region worker are one script started twice, and regions are handed from one to the other | One worker for both would stall chunks for a quarter of a second (more on a phone) whenever a region is computed; two that each computed regions would do that work twice. |
+| 2026-11-12 | Crowns thin over the three nearest other explorers, as they do over your own | "Shared, not lonely": another explorer should read as company, not vanish in a wood. It reuses the lantern positions the shaders already have, so it adds no uniforms and no draw calls. Sid's steer for milestone 8. |
 | 2026-11-12 | The renderer takes heights from the shared rule (`heightOf`) | What blocks the explorer must be exactly what is drawn. Merged with milestone 7. |
 | 2026-11-12 | Milestone 7 (more biomes) is on hold until the new terrain generator (M4c) is merged | Sid's call. M4c adds lake, river, stream, cliff, desert, tundra, marsh and conifer-forest tiles and changes what the fixed screenshot spots show. |
 | 2026-11-12 | Night is moonlit and readable, never dark; explorers carry lanterns | The game is calm, not threatening, and has to stay playable at any hour. The lantern makes night warm and makes company visible. Approved by Sid, 2026-11-12. |
@@ -399,7 +401,7 @@ The order is by how much each step decides the look of everything after it. Each
 | 5 | **Weather** (rain, fog, snow, storms) and **seasons** | Layers on the lights (3) and the wind (4): each weather is mostly a setting of things that already exist, plus particles. | **Done** |
 | 6 | **Atmosphere:** dust motes, light shafts, mist, fireflies, heat haze | Small, cheap layers whose timing depends on time of day and weather. | **Done** |
 | 7 | **More biomes** and the transitions between them | Reuses everything above, on the M4c terrain. | **Done** for the six tiles M4c step 1 generates (lake, cliff, desert, tundra, marsh, conifer forest). Streams and rivers wait for M4c step 2 |
-| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1), (1b), (2) and the chunk-mesh worker done.** Next (3) and (4) |
+| 8 | **Finishing:** in the order Sid set on 2026-11-12, with river and lake water put first once M4c step 2 was merged: (1) sheer cliff faces, (1b) river, stream and lake water at their own levels, (2) phone-risk reductions that need no phone (drop ground cover and wind sway when zoomed out; scale pixel ratio by measured frame time), (3) other explorers hidden under tree crowns, (4) small polish (moon phases, seasonal flowers and the like) | Polish last. | **(1), (1b), (2), the chunk-mesh worker and (3) done.** Next (4) |
 
 ### Kept for later (found along the way)
 - **Tiles near the player are still generated on the main thread,** a chunk at a time, because movement reads them synchronously (`step()`): 1.2 ms a chunk here (3.6 ms at worst), about one chunk for every 32 tiles walked. The harness does not time this (it is in the game's own loop, not in `view.frame()`). The heights under a spot no built chunk covers yet are also worked out on the main thread; in the measured runs that never happened.
@@ -413,7 +415,7 @@ The order is by how much each step decides the look of everything after it. Each
 - **Water does not freeze** (already listed), and a river in winter runs between snowy banks unchanged.
 - **Avatars** are a placeholder playing piece. Real characters wait for M5.
 - **Other explorers outside the known world** are drawn at their true height while the land under them is flat map, so they float. Fade or flatten them with the fringe.
-- **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), but only for your own explorer: others still disappear under the canopy.
+- **Trees do not block the explorer.** The piece passes through trunks. Crowns no longer hide it (milestone 4 thins them), nor the three nearest other explorers (milestone 8). A fourth and any further still disappear under the canopy, though their name labels show.
 - **Water does not freeze** in winter, and rain makes no splash on the ground.
 - **A bare tree is a thinner, twig-coloured crown,** not branches. It reads at the game's scale; a real winter model would be better up close.
 - **Flowers bloom all year** except under snow. Tying each kind to its season needs a flag on the vertex.
@@ -477,6 +479,11 @@ Nobody had watched the wind move before Sid did, and he found tree crowns flashi
 - **Reeds thrashed.** Their quiver grew with their height, so a reed flicked four times as far as grass. Rate of change for a reed pixel went from 0.81 to 0.44 times a second, and its largest frame-to-frame change from 15% to 10%.
 - **Water after milestone 8's changes** (wind 0.6): the sea 2.5% for a typical pixel at 0.13 times a second; a lake 5.1% at 0.19; a river 6.9% at 0.56, which is its current. The river's streaks first ran twice as fast (9.7% at 0.94) and were slowed.
 - **Grass and water were sound.** Grass changes with its own movement (typical pixel 13%, 0.44 times a second after the change). Lake and sea water change slowly: 6 to 11% for a typical pixel, about once every five seconds.
+
+### Crowns over other explorers (milestone 8 step 3, 2026-11-12)
+- **Seen:** in conifer forest (`144,48`) with four stand-in explorers around the player, one that showed only the tip of its head before is in plain view after. The fourth-nearest gets no opening, as designed.
+- **Cost:** frames drawn back to back in that forest, with three others near and with none (median of five rounds of 60 frames): 4.3 against 4.1 ms fully zoomed out (134k triangles), 4.7 against 4.4 ms at zoom 14, 3.7 against 3.9 ms at zoom 26. That is 0.3 ms at most and inside the noise. With nobody near, the shader skips the work. No draw calls, triangles or uniforms were added.
+- **Not checked:** the opening moving with a walking explorer was not put through the flicker harness. It is the same dither as over your own explorer, which was.
 
 ### Chunk meshes off the main thread (milestone 8, 2026-11-12)
 **How it was measured.** `stream-harness.js` (in the session's shared notes folder) stops the game's own loop, moves the player itself, calls `view.frame()` every 16.7 ms and times each call, for 600 frames a run on a fresh page. Between frames it yields to the event loop without timers, so it works in a background pane. "Main thread" is the same build with `#chunks=main`. Its figures match two runs of the commit before the worker (95th percentile 6.9 and 7.6 ms, 99th 17.4 and 15.5 ms, 23 and 27 frames over 8 ms), so the switch is a fair stand-in for "before". Desktop only (GTX 1050, 862×1234 window); each cell is the range over two or three runs.
@@ -647,6 +654,7 @@ Sid answered every item that was waiting, through the coordinating session. The 
 39. **The pixel ratio never goes below 1,** so a screen whose own ratio is 1 is never made blurrier (milestone 8 step 2).
 40. **An edit shows two frames later, not in the same frame,** and the old mesh stays until then. In return no frame is ever spent building.
 41. **The limit for every unit test is 15 s, up from 5 s** (`vitest.config.ts`): see "Findings for Sid". Not an art decision, but outside this work's usual files.
+42. **Crowns thin over the three nearest other explorers,** a little less than over you (milestone 8 step 3). Beyond three, an explorer in a wood shows only as a name label.
 34. **Streams pale and part see-through, rivers dark and opaque,** in the lakes' two colours, so all fresh water is one family and depth tells you what you can wade.
 35. **A visible current on rivers and streams,** as slow streaks carried downstream.
 36. **White water wherever water drops,** drawn as a steep slope of streaming foam, not a sheer fall.

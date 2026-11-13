@@ -465,10 +465,19 @@ void main() {
   // else may change a facet's brightness, or the crown flickers.
   n = normalize(n - vec3(0.0, dot(n, downwind) * 2.0 * bend / max(tall, 0.05), 0.0));
   // Crowns standing between the explorer and the eye thin out, so you can see yourself among the trunks.
-  vec2 toEye = normalize(uViewDir.xz);
+  vec2 toEye = normalize(uViewDir.xz), across = vec2(-toEye.y, toEye.x);
   vec2 rel = root.xz - uFocus - toEye * 1.7;
-  float hide = length(vec2(dot(rel, toEye) / 2.6, dot(rel, vec2(-toEye.y, toEye.x)) / 1.3));
-  vFade = mix(1.0, 0.18 + 0.82 * smoothstep(0.55, 1.0, hide), smoothstep(0.25, 0.45, position.y));
+  float hide = length(vec2(dot(rel, toEye) / 2.6, dot(rel, across) / 1.3));
+  float thin = 0.18 + 0.82 * smoothstep(0.55, 1.0, hide);
+  // They thin over the other explorers nearby too (the same ones whose lanterns show), so company is not
+  // lost under the canopy. The opening is a little smaller and less bare than your own: you stay the subject.
+  for (int i = 1; i < ${LAMPS}; i++) {
+    if (uLamps[i].w <= 0.0) continue;
+    vec2 by = root.xz - uLamps[i].xz - toEye * 1.5;
+    float near = length(vec2(dot(by, toEye) / 2.3, dot(by, across) / 1.15));
+    thin = min(thin, 0.3 + 0.7 * smoothstep(0.55, 1.0, near));
+  }
+  vFade = mix(1.0, thin, smoothstep(0.25, 0.45, position.y));
 #ifdef LEAFY
   // Broadleaves follow the year: fresh in spring, turning gold or rust in autumn (each tree in its own week),
   // and bare in winter, drawn as a thinner, twig-coloured crown.
