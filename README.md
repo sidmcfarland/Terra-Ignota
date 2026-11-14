@@ -39,7 +39,7 @@ apps/bots         headless bot swarm for load tests
 
 ## Deploy
 
-Nothing is deployed yet. Where the client is hosted gets decided with the server work (M7 in `docs/PLAN.md`); it won't be GitHub Pages, which needs a paid plan for a private repository. The client is a static build (`npm run build`, output in `apps/client/dist`) that reads `BASE_PATH`, `VITE_SIGNAL_URL` and `VITE_TURN_URL` from the environment.
+The game is served from GitHub Pages at https://sidmcfarland.github.io/Terra-Ignota/. `.github/workflows/pages.yml` builds and publishes it on every push to `main` (`npm run build`, output in `apps/client/dist`). A build reads `BASE_PATH`, `VITE_SIGNAL_URL` and `VITE_TURN_URL` from the environment; the workflow takes the last two from the repository variables `SIGNAL_URL` and `TURN_URL`. Neither is set, so the published game has no signal server and each visitor plays alone unless their link carries `#signal=wss://…`.
 
 The game signs edits with WebCrypto, so it only starts on `localhost` or over HTTPS. To play from a phone on your own Tailscale network:
 

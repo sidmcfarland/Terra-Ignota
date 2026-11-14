@@ -17,7 +17,7 @@ The M5 design ([M5_DESIGN.md](M5_DESIGN.md), decided with Sid on 2026-11-12) fil
 | Concern | Choice |
 |---|---|
 | Language | TypeScript everywhere (shared sim runs in browser + Node) |
-| Client | Vite + Three.js + vite-plugin-pwa. Where it is hosted is decided at M7 (not GitHub Pages) |
+| Client | Vite + Three.js + vite-plugin-pwa, served from GitHub Pages (https://sidmcfarland.github.io/Terra-Ignota/) |
 | P2P transport | WebRTC data channels (unreliable for movement, reliable for ops) |
 | Signaling + zone directory | Small Node WebSocket server (VPS) |
 | NAT traversal | Public STUN + coturn TURN (VPS) |
@@ -49,12 +49,12 @@ infra/            docker-compose: signal + coturn + seed
   - **Scope:** *zone* ops replicate to peers in the zone, to neighbouring hosts when near the border, and to the seed, by per-chunk digests. *World* ops (the atlas layers) go everywhere: every device holds them, hosts pass them to all neighbouring hosts, and the seed passes them to every host it is linked to. *Player* ops are held by their author's device, its current host and the seed only.
   - Painting tiles is the `tile` layer. Every later mechanic (charting, finds, names, harvests, builds) is another layer, not another message.
 - **Discovery**: the signaling server keeps soft-state `world/zone → host` entries via heartbeats. It never sees gameplay. *Later:* replace it with a DHT or gossip.
-- **Join URL**: `https://<host>/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
+- **Join URL**: `https://sidmcfarland.github.io/Terra-Ignota/#w=<worldId>` (an optional `&at=x,y` invites someone to a spot).
 
 ## Milestones
 | # | Deliverable | Done when | Status |
 |---|---|---|---|
-| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built, except the deploy. The Pages workflow was removed on 2026-11-13: Pages for a private repo needs a paid GitHub plan. Hosting is decided at M7. Run locally for now |
+| M0 | Scaffold: workspaces, Vite PWA, CI, Pages deploy | Installable empty app live at a URL | Built. The Pages deploy was removed on 2026-11-13 while the repository was private, and restored on 2026-11-14 when it went public |
 | M1 | Single-player: worldgen, chunk streaming, render, movement, camera | Walk an endless seeded world at 60fps | Done (3D isometric, Three.js) |
 | M2 | Networking core: signal server, WebRTC peers, one zone, star host | Two browsers see each other move | Done (e2e-tested) |
 | M3 | Zones: partitioning, election, border handoff, host migration | Kill the host tab; play continues | Done (e2e-tested): zone handoff, neighbouring-host links, score-based election, backups with state streaming. A hung host is replaced in about 2s |
@@ -434,7 +434,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 - **Identity is per device, not per player.** The Ed25519 key lives in IndexedDB, so clearing site data or switching devices makes a new identity. `peerId` is still a random id per tab, used only for connections.
 - **Only the unreliable channel is binary.** Reliable messages (edits, catch-up, announcements) are JSON. An edit is about 240 bytes, mostly its base64 key and signature, and in the swarm edits were the largest share of reliable traffic.
 - **The 300-bot target is unproven.** See the M6 results: stable at 100 bots on the dev machine, which runs out of CPU before 300.
-- **Nothing is deployed.** The game runs from a local build or dev server. A build served over HTTPS has no signal server unless it was built with `VITE_SIGNAL_URL` or the link carries `#signal=wss://…`. To play from a phone before M7, serve a local build over Tailscale HTTPS (the README's "Deploy" section has the steps).
+- **The published game is solo.** It is live on GitHub Pages, but no signal server is deployed and the `SIGNAL_URL` variable is unset, so players only meet if their link carries `#signal=wss://…` (for example a local build served over Tailscale HTTPS; the README's "Deploy" section has the steps). How devices find each other without a server of ours is an open design question (2026-11-14).
 
 ## Decisions
 | Decision | Why |
@@ -476,7 +476,7 @@ Live state belongs to the zone's host. Lasting edits live in per-chunk CRDTs, re
 | One river span in ten is a ford | Sid's rule lets a river be crossed at a ford. Without any, a river from the mountains to the sea cuts the land in two until M5's bridges. |
 | Under a lake or in a channel, `elevationAt` is the water's surface | The renderer has one water surface, at sea level. Flat ground in a water colour reads as a lake; a dry pit in a water colour does not. `landAt` has the depth for when water is drawn properly. |
 | Rivers come from simulating each large region, not from carved noise lines | Sid asked for rivers shaped by gravity. Noise lines are cheaper but don't truly flow downhill. |
-| No GitHub Pages deploy; hosting is decided at M7 | Pages for a private repo needs a paid GitHub plan, which Sid doesn't have, and the workflow failed on every push to `main`. It was removed on 2026-11-13. The client is a static build, so any static host or the M7 server can carry it. |
+| The repository is public under GPL-3.0, and the game is served from GitHub Pages (2026-11-14) | Sid wants a game that lives without a server he runs or pays for, and that others can mirror and keep alive. Pages is free for a public repository. GPL version 3 keeps anything published from the code open. Before going public the history was rewritten to carry a GitHub noreply address in place of a personal one, and pushed to a fresh repository so the old commits were never public; the old one is kept private as `Terra-Ignota-archive`. This replaces the 2026-11-13 decision to drop Pages. |
 | Bots are real `Session`s over node-datachannel, not a protocol re-implementation | They load-test the code players run (host tick, election, failover, catch-up), the way the seed reuses `Peer`. The cost: a bot is as heavy as a real peer, which caps how many one machine can run. |
 | A hand-written binary codec for the unreliable channel only; reliable messages stay JSON | Snapshots and position reports are almost all the traffic. A varint codec is about 250 lines and needs no dependency. Reliable messages are rare, and JSON keeps them easy to read and change. |
 | Positions are fixed point at 1/64 tile | Half a hundredth of a tile of error, below what's visible and inside what the e2e tests check, in 2 bytes per axis for anyone within 128 tiles of the message's origin. |
