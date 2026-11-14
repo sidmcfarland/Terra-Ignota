@@ -94,8 +94,11 @@ async function main() {
     zoomBy(Math.pow(1.0015, -e.deltaY));
   }, { passive: false });
 
-  // The session follows the player across zone borders (see nextZone).
-  let zone = zoneOf(self.x, self.y);
+  // The session follows the player across zone borders (see nextZone). It starts in the zone of the
+  // spot players arrive at, not of where this one happened to be set down around it: a spawn can lie
+  // right on a zone border, and players who arrive together must not start in two zones, each hosting
+  // its own. (A zone holds its players up to a chunk outside it, so the few tiles don't matter.)
+  let zone = zoneOf(base.x, base.y);
   const profile = new HostingProfile(cfg.peerId);
   const hostBtn = document.getElementById('hostBtn') as HTMLButtonElement;
   const showHosting = () => {

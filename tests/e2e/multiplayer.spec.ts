@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { expect, test, type Browser, type Page } from '@playwright/test';
+import { isWalkable, tileAt, worldSeed, zoneOf } from '../../packages/shared/src/index.ts';
 
 interface Probe {
   role: string;
@@ -825,4 +826,60 @@ test("a player's own ops go to its host and the seed, and to no other player", a
   await b.reload();
   await b.waitForFunction(() => (window as any).__ti?.session);
   expect(await opAt(b, 'purse', 0, 0, bPub)).toBe(sig);
+});
+
+// ---- Spawning ----
+
+/**
+ * A tile on the border between two zones of a world, with open ground for 3 tiles all round it,
+ * so that players jittered around it land on walkable tiles on both sides of the border.
+ */
+function openBorderTile(world: string): [number, number] {
+  const seed = worldSeed(world);
+  const open = (x: number, y: number) => {
+    for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) if (!isWalkable(tileAt(seed, x + dx, y + dy))) return false;
+    return true;
+  };
+  // The edges of zone 0,0, its far ones first (they lie in the drainage region every world starts in).
+  for (const edge of [ZONE_TILES, 0]) {
+    for (let s = 8; s < ZONE_TILES; s += 4) {
+      if (open(s, edge)) return [s, edge];
+      if (open(edge, s)) return [edge, s];
+    }
+  }
+  throw new Error(`world ${world} has no open ground on an edge of zone 0,0`);
+}
+
+test('players who spawn at the same spot start in the same zone, even on a zone border', async ({ browser }) => {
+  // A world's spawn can lie exactly on a zone border (about one new world in 300 does), and each player
+  // starts up to 2 tiles from it. Here two players are sent to a spot on a border and pushed to
+  // opposite sides of it: A's random numbers are all low, B's all high.
+  const world = `e2e${Date.now()}`;
+  const [sx, sy] = openBorderTile(world);
+  const open = async (lo: number) => {
+    const page = await (await browser.newContext()).newPage();
+    page.on('pageerror', (e) => console.error('pageerror:', e.message));
+    await page.addInitScript((lo) => {
+      const random = Math.random;
+      Math.random = () => lo + random() * 0.1;
+    }, lo);
+    await page.goto(`/#w=${world}&at=${sx},${sy}&render=0&debug=1`);
+    await page.waitForFunction(() => (window as any).__ti?.session);
+    return page;
+  };
+  const a = await open(0);
+  await expect.poll(async () => (await probe(a)).role).toBe('host');
+  const b = await open(0.9);
+
+  // They stand either side of the border...
+  const [pa, pb] = [(await probe(a)).self, (await probe(b)).self];
+  expect(zoneOf(pa.x, pa.y)).not.toBe(zoneOf(pb.x, pb.y));
+  expect(Math.hypot(pa.x - pb.x, pa.y - pb.y)).toBeLessThan(6);
+  // ...and are in one zone all the same, the spot's: B joins A as a client and they see each other.
+  await expect.poll(async () => (await probe(b)).role, { timeout: 20_000 }).toBe('client');
+  expect((await probe(a)).role).toBe('host');
+  expect((await probe(a)).zone).toBe(zoneOf(sx + 0.5, sy + 0.5));
+  expect((await probe(b)).zone).toBe((await probe(a)).zone);
+  await expect.poll(async () => (await probe(a)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await probe(b)).remotes.filter(Boolean).length, { timeout: 10_000 }).toBe(1);
 });
