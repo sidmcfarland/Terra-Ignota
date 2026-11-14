@@ -52,3 +52,11 @@ tailscale serve --bg --https=8443 http://localhost:8787
 ```
 
 Then open `https://<machine>.<tailnet>.ts.net/#signal=wss://<machine>.<tailnet>.ts.net:8443`. `tailscale serve reset` turns both off.
+
+## Licence
+
+Copyright (C) 2026 Sid McFarland.
+
+Terra Ignota is free software: you can redistribute it and modify it under the terms of the GNU General Public License, version 3, as published by the Free Software Foundation. It comes with no warranty. The full text is in [LICENSE](LICENSE).
+
+In short: you may use, copy and change the game, but anything you publish that is built from it must be released under the same licence, with its source, and must keep this notice.
