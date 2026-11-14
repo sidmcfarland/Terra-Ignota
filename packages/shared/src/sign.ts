@@ -2,7 +2,7 @@
  * Ed25519 signing for world edits, via WebCrypto (globalThis.crypto.subtle),
  * which browsers and Node both provide, so this stays isomorphic.
  */
-import { opPayload, type TileOp, type UnsignedOp } from './edits.ts';
+import { opPayload, type Op, type UnsignedOp } from './edits.ts';
 
 const ALG = { name: 'Ed25519' } as const;
 const enc = new TextEncoder();
@@ -37,7 +37,8 @@ export async function identityFromKeys(keys: CryptoKeyPair): Promise<Identity> {
   return { pub: toB64url(raw), privateKey: keys.privateKey };
 }
 
-export async function signOp(world: string, id: Identity, op: Omit<UnsignedOp, 'author'>): Promise<TileOp> {
+/** Sign an op as this identity. `at` is the author's clock in unix seconds: take it from the store's clock (OpStore.now). */
+export async function signOp(world: string, id: Identity, op: Omit<UnsignedOp, 'author'>): Promise<Op> {
   const unsigned: UnsignedOp = { ...op, author: id.pub };
   const sig = new Uint8Array(await crypto.subtle.sign(ALG, id.privateKey, utf8(opPayload(world, unsigned))));
   return { ...unsigned, sig: toB64url(sig) };
@@ -64,7 +65,7 @@ function verifyKey(author: string): Promise<CryptoKey | null> {
 }
 
 /** True if the op's signature is valid for its author in this world. */
-export async function verifyOp(world: string, op: TileOp): Promise<boolean> {
+export async function verifyOp(world: string, op: Op): Promise<boolean> {
   const key = await verifyKey(op.author);
   if (!key) return false;
   try {

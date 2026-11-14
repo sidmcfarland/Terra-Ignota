@@ -1,4 +1,4 @@
-import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type TileEdits, type ZoneId } from '@terra/shared';
+import { ZONE_TILES, parseZone, zoneName, zoneOf, zonesNear, type OpStore, type ZoneId } from '@terra/shared';
 import type { Session } from './net/session.ts';
 import type { PerfStats } from './render/view.ts';
 import type { Season, Weather } from './render/weather.ts';
@@ -12,9 +12,11 @@ export interface DebugState {
   peerId: string;
   name: string;
   session: Session | null;
-  edits: TileEdits;
+  edits: OpStore;
   /** This device's public key, the author id on its edits. */
   author: string;
+  /** How far this device's clock for ops is shifted, in seconds (`#now=`). */
+  clockShift: number;
   /** Renderer cost, or null when not drawing (`#render=0`). */
   perf: PerfStats | null;
   /** The hour of the day being drawn (0–24), or null when not drawing. */
@@ -138,12 +140,22 @@ function zoneLines({ seed, zone, self }: DebugState): string[] {
   return lines;
 }
 
-function editLines({ edits, author, self }: DebugState): string[] {
-  const here = edits.get(Math.floor(self.x), Math.floor(self.y));
-  return [
-    `EDITS  ${edits.size} tiles edited  ·  clock ${edits.clock}  ·  you sign as ${author.slice(0, 8)}`,
+function editLines({ edits, author, self, clockShift }: DebugState): string[] {
+  const here = edits.get('tile', Math.floor(self.x), Math.floor(self.y));
+  const tiles = edits.count('tile'), other = edits.size - tiles;
+  const lines = [
+    `EDITS  ${tiles} tiles edited${other ? `, ${other} other ops` : ''}  ·  clock ${edits.clock}  ·  you sign as ${author.slice(0, 8)}`,
     here ? `       under you: by ${here.author.slice(0, 8)} at clock ${here.clock}` : '       under you: not edited',
   ];
+  // Only with `#now=`: ops are dated, and expire, by a shifted clock.
+  if (clockShift) lines.push(`       ops dated ${clockShift > 0 ? '+' : '−'}${span(Math.abs(clockShift))} from this device's clock (#now)`);
+  return lines;
+}
+
+/** A length of time in the largest unit that fits: 45d, 3h, 90m, 30s. */
+function span(s: number): string {
+  for (const [unit, n] of [['d', 86400], ['h', 3600], ['m', 60]] as const) if (s % n === 0) return `${s / n}${unit}`;
+  return `${s}s`;
 }
 
 function netLines({ session, peerId, name, seed }: DebugState): string[] {

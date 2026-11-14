@@ -171,7 +171,7 @@ export class Terrain {
     const ask: ChunkAsk = {
       kind: 'chunk', seed: this.tiles.seed, cx, cy, version,
       // Only an edited chunk's tiles are sent; the worker generates the rest itself, as this thread would.
-      tiles: this.tiles.edits?.hasChunk(key) ? this.tiles.chunk(cx, cy) : null,
+      tiles: this.tiles.edited(cx, cy) ? this.tiles.chunk(cx, cy) : null,
       east: BAKE_EAST, west: BAKE_WEST,
     };
     this.worker!.postMessage(ask);
@@ -333,7 +333,7 @@ export class Terrain {
       for (const [cx, cy] of this.wanted) {
         const key = keyOf(cx, cy), version = this.version(key), t = performance.now();
         const shown = this.chunks.has(key);
-        this.install(this.builder.build(cx, cy, this.tiles.edits?.hasChunk(key) ? this.tiles.chunk(cx, cy) : null), version);
+        this.install(this.builder.build(cx, cy, this.tiles.edited(cx, cy) ? this.tiles.chunk(cx, cy) : null), version);
         const ms = performance.now() - t;
         this.buildMs.last = ms;
         this.buildMs.max = Math.max(this.buildMs.max, ms);

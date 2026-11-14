@@ -1,13 +1,11 @@
 import {
-  BORDER_VIEW, HOST_LINK_LIMITS, LinkGuard, distToZone,
-  type NeighbourHost, type PlayerEntry, type PlayerInfo, type PlayerPos, type SignalData, type TileOp, type ZoneId,
+  BORDER_VIEW, HOST_LINK_LIMITS, LAYERS, LinkGuard, OPS_PER_MESSAGE, RELAY_FLUSH_MS, distToZone, opPoint,
+  type NeighbourHost, type Op, type PlayerEntry, type PlayerInfo, type PlayerPos, type SignalData, type ZoneId,
 } from '@terra/shared';
 import { Peer } from './peer.ts';
 
 /** Redial a dropped border link after this long, if the neighbour is still listed. */
 const REDIAL_MS = 2000;
-/** Ops per 'edits' message, to keep data-channel messages small. */
-const OPS_PER_MESSAGE = 200;
 
 /** A player this host is the authority for, with the number its snapshots use for it. */
 export interface LocalPlayer {
@@ -28,6 +26,8 @@ interface Link {
   /** Players it last said were near our zone, and when. */
   visible: number;
   edgeT: number;
+  /** World-scope ops waiting to go to it: sent together a few times a second, so they fit its message budget. */
+  queue: Op[];
 }
 
 /** One border link, for the debug panel. */
@@ -53,6 +53,7 @@ export class BorderLinks {
   private redial = new Map<string, ReturnType<typeof setTimeout>>();
   private rosterKey = '';
   private roster: PlayerEntry[] = [];
+  private flushT = 0;
 
   private readonly selfId: string;
   private readonly iceServers: RTCIceServer[];
@@ -74,13 +75,23 @@ export class BorderLinks {
     this.onOps = onOps;
   }
 
-  /** Pass edits to each neighbouring host whose zone they're near (within BORDER_VIEW), except the one they came from. */
-  sendOps(ops: TileOp[], except: string | null = null) {
+  /**
+   * Pass ops to the neighbouring hosts, except the one they came from. A
+   * zone-scope op goes at once to each neighbour whose zone it's near (within
+   * BORDER_VIEW). A world-scope op goes to every neighbour, with the next
+   * batch. Player-scope ops never cross between hosts.
+   */
+  sendOps(ops: Op[], except: string | null = null) {
+    const atlas = ops.filter((op) => LAYERS[op.l].scope === 'world');
+    const local = ops.filter((op) => LAYERS[op.l].scope === 'zone');
     for (const link of this.links.values()) {
       if (!link.zone || !link.peer.isOpen || link.hostId === except) continue;
       const zone = link.zone;
-      const near = ops.filter((op) => distToZone(op.x + 0.5, op.y + 0.5, zone) <= BORDER_VIEW);
-      for (let i = 0; i < near.length; i += OPS_PER_MESSAGE) link.peer.sendR({ t: 'edits', ops: near.slice(i, i + OPS_PER_MESSAGE) });
+      send(link.peer, local.filter((op) => {
+        const at = opPoint(op);
+        return !!at && distToZone(at.x, at.y, zone) <= BORDER_VIEW;
+      }));
+      for (const op of atlas) link.queue.push(op);
     }
   }
 
@@ -117,6 +128,11 @@ export class BorderLinks {
         if (distToZone(pl.x, pl.y, link.zone) <= BORDER_VIEW) p.push([pl.n, pl.x, pl.y]);
       }
       link.peer.sendU({ t: 'edge', p });
+    }
+    const now = performance.now();
+    if (now - this.flushT >= RELAY_FLUSH_MS) {
+      this.flushT = now;
+      for (const link of this.links.values()) if (link.queue.length) send(link.peer, link.queue.splice(0));
     }
   }
 
@@ -175,7 +191,7 @@ export class BorderLinks {
       },
     }, new LinkGuard(HOST_LINK_LIMITS));
     const link: Link = {
-      hostId: id, zone: this.wanted.get(id) ?? null, peer, initiator, roster: new Map(), visible: 0, edgeT: 0,
+      hostId: id, zone: this.wanted.get(id) ?? null, peer, initiator, roster: new Map(), visible: 0, edgeT: 0, queue: [],
     };
     const old = this.links.get(id);
     this.links.set(id, link);
@@ -188,6 +204,10 @@ export class BorderLinks {
     this.links.delete(id);
     link?.peer.close();
   }
+}
+
+function send(peer: Peer, ops: Op[]) {
+  for (let i = 0; i < ops.length; i += OPS_PER_MESSAGE) peer.sendR({ t: 'edits', ops: ops.slice(i, i + OPS_PER_MESSAGE) });
 }
 
 /** A player's info as received from another peer, coerced into shape. */
